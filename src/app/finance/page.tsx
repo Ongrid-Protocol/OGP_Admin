@@ -9,6 +9,8 @@ import { LiquidityPoolManagerAdmin } from '@/components/finance/LiquidityPoolMan
 import { ProjectFactoryAdmin } from '@/components/finance/ProjectFactoryAdmin';
 import { RepaymentRouterAdmin } from '@/components/finance/RepaymentRouterAdmin';
 import { RiskRateOracleAdapterAdmin } from '@/components/finance/RiskRateOracleAdapterAdmin';
+import { PausableGovernorAdmin } from '@/components/finance/PausableGovernorAdmin';
+import { DirectProjectVaultAdmin } from '@/components/finance/DirectProjectVaultAdmin';
 
 export default function FinancePage() {
   return (
@@ -17,12 +19,14 @@ export default function FinancePage() {
       <DeveloperDepositEscrowAdmin />
       <DeveloperRegistryAdmin />
       {/* <DevEscrowAdmin /> */}{/* Removed */}
-      {/* <DirectProjectVaultAdmin /> */}{/* Removed */}
+      {/* <DirectProjectVaultAdmin /> */}{/* Will be added below */}
       <FeeRouterAdmin />
       <LiquidityPoolManagerAdmin />
       <ProjectFactoryAdmin />
       <RepaymentRouterAdmin />
       <RiskRateOracleAdapterAdmin />
+      <PausableGovernorAdmin />
+      <DirectProjectVaultAdmin />
     </div>
   );
 } 

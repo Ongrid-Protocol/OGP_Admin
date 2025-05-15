@@ -33,7 +33,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${geistSans.variable} ${geistMono.variable} antialiased`}>
       <body>
-        <Providers>
+        <Providers> 
           <Navbar />
           <div className="min-h-screen flex flex-col">
             {/* Header with Connect Button - THIS SECTION WILL BE REMOVED/SIMPLIFIED */}

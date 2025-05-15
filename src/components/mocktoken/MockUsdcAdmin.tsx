@@ -142,75 +142,79 @@ export function MockUsdcAdmin() {
   }
 
   return (
-    <div className="space-y-8 p-4 border rounded-lg shadow-md">
-      <h2 className="text-2xl font-semibold">MockUSDC Admin</h2>
+    <div className="space-y-8 p-4 border rounded-lg shadow-md bg-white">
+      <h2 className="text-2xl font-semibold text-black">MockUSDC Admin</h2>
 
       {/* Mint Section */}
-      <div className="space-y-4 p-4 border rounded">
-        <h3 className="text-xl">Mint Tokens</h3>
+      <div className="space-y-4 p-4 border rounded bg-gray-50">
+        <h3 className="text-xl font-medium text-black">Mint Tokens</h3>
         <div>
-          <label htmlFor="toAddress" className="block text-sm font-medium text-gray-700">Recipient Address:</label>
+          <label htmlFor="toAddress" className="block text-sm font-medium text-black">Recipient Address:</label>
           <input
             type="text"
             id="toAddress"
             value={toAddress}
             onChange={(e) => setToAddress(e.target.value)}
             placeholder="0x..."
-            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black placeholder-gray-500"
           />
         </div>
         <div>
-          <label htmlFor="mintAmount" className="block text-sm font-medium text-gray-700">Amount (USDC):</label>
+          <label htmlFor="mintAmount" className="block text-sm font-medium text-black">Amount (USDC):</label>
           <input
             type="text"
             id="mintAmount"
             value={mintAmount}
             onChange={(e) => setMintAmount(e.target.value)}
             placeholder="e.g., 100"
-            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black placeholder-gray-500"
           />
         </div>
         <button
           onClick={handleMint}
           disabled={isMintPending || isConfirming}
-          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400"
+          className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400 disabled:text-gray-600 disabled:cursor-not-allowed"
         >
           {isMintPending ? 'Minting...' : isConfirming ? 'Confirming...' : 'Mint USDC'}
         </button>
-        {mintStatus && <p className="text-sm mt-2">{mintStatus}</p>}
+        {mintStatus && (
+            <p className={`text-sm mt-2 font-medium ${mintError || receiptError ? 'text-red-700' : isConfirmed ? 'text-green-700' : 'text-blue-700'}`}>
+                {mintStatus}
+            </p>
+        )}
          {lastMintEvent && (
-          <div className="mt-2 p-2 bg-green-100 border border-green-300 rounded text-sm">
-            <p><strong>Last Mint Event:</strong></p>
-            <p>Minter: {lastMintEvent.minter}</p>
-            <p>To: {lastMintEvent.to}</p>
-            <p>Amount: {formatUnits(lastMintEvent.amount, 6)} USDC</p>
+          <div className="mt-2 p-3 bg-green-50 border border-green-200 rounded text-sm">
+            <p className="font-semibold text-black"><strong>Last Mint Event:</strong></p>
+            <p className="text-black">Minter: {lastMintEvent.minter}</p>
+            <p className="text-black">To: {lastMintEvent.to}</p>
+            <p className="text-black">Amount: {formatUnits(lastMintEvent.amount, 6)} USDC</p>
           </div>
         )}
       </div>
 
       {/* BalanceOf Section */}
-      <div className="space-y-4 p-4 border rounded">
-        <h3 className="text-xl">Check Balance</h3>
+      <div className="space-y-4 p-4 border rounded bg-gray-50">
+        <h3 className="text-xl font-medium text-black">Check Balance</h3>
         <div>
-          <label htmlFor="balanceAccountAddress" className="block text-sm font-medium text-gray-700">Account Address:</label>
+          <label htmlFor="balanceAccountAddress" className="block text-sm font-medium text-black">Account Address:</label>
           <input
             type="text"
             id="balanceAccountAddress"
             value={balanceAccountAddress}
             onChange={(e) => { setBalanceAccountAddress(e.target.value); setFetchedBalance(null); }}
             placeholder="0x..."
-            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm"
+            className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black placeholder-gray-500"
           />
         </div>
         <button
           onClick={handleFetchBalance}
           disabled={isBalanceLoading}
-          className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-400"
+          className="px-4 py-2 bg-green-600 text-white rounded hover:bg-green-700 disabled:bg-gray-400 disabled:text-gray-600 disabled:cursor-not-allowed"
         >
           {isBalanceLoading ? 'Fetching...' : 'Get Balance'}
         </button>
-        {balanceError && <p className="text-red-500 text-sm mt-2">Error fetching balance: {balanceError.message}</p>}
-        {fetchedBalance !== null && <p className="text-sm mt-2">Balance: {fetchedBalance} USDC</p>}
+        {balanceError && <p className="text-red-600 text-sm font-medium mt-2">Error fetching balance: {balanceError.message}</p>}
+        {fetchedBalance !== null && <p className="text-sm mt-2 text-black"><strong>Balance:</strong> {fetchedBalance} USDC</p>}
       </div>
     </div>
   );
