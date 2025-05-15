@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
-import { Address, Abi, decodeEventLog, Hex, keccak256, toHex, formatUnits } from 'viem';
+import { Address, Abi, keccak256, toHex, formatUnits, Hex, decodeEventLog } from 'viem';
 import directProjectVaultAbiJson from '@/abis/DirectProjectVault.json';
 import constantsAbiJson from '@/abis/Constants.json';
 
@@ -32,7 +32,7 @@ const createRoleHashMap = (roleNames: string[]): { [hash: Hex]: string } => {
 };
 
 export function DirectProjectVaultAdmin() {
-  const { address: connectedAddress } = useAccount();
+  const {} = useAccount();
   const { data: writeHash, writeContract, isPending: isWritePending, error: writeError } = useWriteContract();
   const { isLoading: isConfirming, isSuccess: isConfirmed, error: receiptError } = useWaitForTransactionReceipt({ hash: writeHash });
 
@@ -46,13 +46,16 @@ export function DirectProjectVaultAdmin() {
   const [selectedRoleBytes32, setSelectedRoleBytes32] = useState<Hex | null>(null);
   const [roleManagementAddress, setRoleManagementAddress] = useState<string>(''); // For grant/revoke/check
   const [roleEvents, setRoleEvents] = useState<(RoleGrantedEventArgs | RoleRevokedEventArgs)[]>([]);
-  const [checkRoleNameVault, setCheckRoleNameVault] = useState<string>('');
-  const [checkRoleBytes32Vault, setCheckRoleBytes32Vault] = useState<Hex | null>(null);
   const [hasRoleResultVault, setHasRoleResultVault] = useState<boolean | string | null>(null);
 
   // Vault State & Data
-  const [vaultDetails, setVaultDetails] = useState<any | null>(null);
-  const [vaultActionEvents, setVaultActionEvents] = useState<any[]>([]); 
+  const [vaultDetails, setVaultDetails] = useState<{
+    totalAssetsInvested: string;
+    isFundingClosed: boolean | undefined;
+    isLoanClosed: boolean | undefined;
+    currentAprBps: bigint | undefined;
+  } | null>(null);
+  const [vaultActionEvents, setVaultActionEvents] = useState<(FundingClosedEventArgs | LoanClosedEventArgs)[]>([]); 
 
   // --- Read Hooks for Vault Details (dynamically enabled) ---
   const { data: totalAssetsData, refetch: fetchTotalAssets, isLoading: isLoadingTotalAssets } = useReadContract({
@@ -72,11 +75,11 @@ export function DirectProjectVaultAdmin() {
     address: vaultAddress, abi: directProjectVaultAbi, functionName: 'getCurrentAprBps', query: { enabled: !!vaultAddress }
   });
 
-  const { data: hasRoleDataVault, refetch: fetchHasRoleVault } = useReadContract({
+  const { data: hasRoleDataVault, refetch: fetchHasRoleVault, isLoading: isHasRoleLoadingVault } = useReadContract({
     address: vaultAddress,
     abi: directProjectVaultAbi,
     functionName: 'hasRole',
-    args: checkRoleBytes32Vault && roleManagementAddress ? [checkRoleBytes32Vault, roleManagementAddress as Address] : undefined,
+    args: selectedRoleBytes32 && roleManagementAddress ? [selectedRoleBytes32, roleManagementAddress as Address] : undefined,
     query: { enabled: false },
   });
 
@@ -95,42 +98,85 @@ export function DirectProjectVaultAdmin() {
   }, [selectedRoleName]);
 
   useEffect(() => {
-    if (checkRoleNameVault) {
-      try {
-        setCheckRoleBytes32Vault(checkRoleNameVault === 'DEFAULT_ADMIN_ROLE' ? '0x0000000000000000000000000000000000000000000000000000000000000000' : keccak256(toHex(checkRoleNameVault)));
-      } catch (e) { console.error("Error computing check role hash:", e); setCheckRoleBytes32Vault(null); }
-    } else { setCheckRoleBytes32Vault(null); }
-  }, [checkRoleNameVault]);
-
-  useEffect(() => { if (hasRoleDataVault !== undefined) setHasRoleResultVault(hasRoleDataVault as boolean); }, [hasRoleDataVault]);
+    if (hasRoleDataVault !== undefined) {
+      setHasRoleResultVault(hasRoleDataVault as boolean);
+    } else if (isHasRoleLoadingVault === false && hasRoleDataVault === undefined) { // Handle no data after load
+        setHasRoleResultVault(null);
+    }
+  }, [hasRoleDataVault, isHasRoleLoadingVault]);
   
   // --- Event Watchers (scoped to vaultAddress if set) ---
-   // RoleGranted & RoleRevoked for the specific vault instance
-  ['RoleGranted', 'RoleRevoked'].forEach(eventName => {
-    useWatchContractEvent({
-        address: vaultAddress, // Watch on the specific vault
-        abi: directProjectVaultAbi,
-        eventName: eventName as any,
-        onLogs(logs: any) {
-            logs.forEach((log: any) => {
-                const args = log.args as RoleGrantedEventArgs | RoleRevokedEventArgs;
+  useWatchContractEvent({
+    address: vaultAddress, 
+    abi: directProjectVaultAbi,
+    eventName: 'RoleGranted',
+    onLogs(logs) {
+        logs.forEach(log => {
+            try {
+                const decoded = decodeEventLog({
+                    abi: directProjectVaultAbi,
+                    data: log.data,
+                    topics: log.topics,
+                    eventName: 'RoleGranted'
+                });
+                const args = decoded.args as unknown as RoleGrantedEventArgs;
                 const roleName = roleHashMap[args.role] || args.role;
                 setRoleEvents(prev => [...prev, args]);
-                setStatusMessage(`Vault ${eventName}: Role ${roleName} for ${args.account}`);
-            });
-        },
-        onError: (error) => console.error(`Error watching vault ${eventName}:`, error)
-    });
+                setStatusMessage(`Vault RoleGranted: Role ${roleName} for ${args.account}`);
+            } catch (e) {
+                console.error("Error decoding vault RoleGranted event:", e);
+                setStatusMessage("Error processing vault RoleGranted event.");
+            }
+        });
+    },
+    onError: (error) => console.error(`Error watching vault RoleGranted:`, error)
+  });
+
+  useWatchContractEvent({
+    address: vaultAddress, 
+    abi: directProjectVaultAbi,
+    eventName: 'RoleRevoked',
+    onLogs(logs) {
+        logs.forEach(log => {
+            try {
+                const decoded = decodeEventLog({
+                    abi: directProjectVaultAbi,
+                    data: log.data,
+                    topics: log.topics,
+                    eventName: 'RoleRevoked'
+                });
+                const args = decoded.args as unknown as RoleRevokedEventArgs;
+                const roleName = roleHashMap[args.role] || args.role;
+                setRoleEvents(prev => [...prev, args]);
+                setStatusMessage(`Vault RoleRevoked: Role ${roleName} for ${args.account}`);
+            } catch (e) {
+                console.error("Error decoding vault RoleRevoked event:", e);
+                setStatusMessage("Error processing vault RoleRevoked event.");
+            }
+        });
+    },
+    onError: (error) => console.error(`Error watching vault RoleRevoked:`, error)
   });
 
   useWatchContractEvent({
     address: vaultAddress, abi: directProjectVaultAbi, eventName: 'FundingClosed',
     onLogs(logs) {
         logs.forEach(log => {
-            const args = (log as any).args as FundingClosedEventArgs;
-            setVaultActionEvents(prev => [...prev, {eventName: 'FundingClosed', ...args}]);
-            setStatusMessage(`Vault FundingClosed: Total Invested ${formatUnits(args.totalAssetsInvested, 6)} USDC`);
-            refetchVaultDetails();
+            try {
+                const decoded = decodeEventLog({
+                    abi: directProjectVaultAbi,
+                    data: log.data,
+                    topics: log.topics,
+                    eventName: 'FundingClosed'
+                });
+                const args = decoded.args as unknown as FundingClosedEventArgs;
+                setVaultActionEvents(prev => [...prev, args]);
+                setStatusMessage(`Vault FundingClosed: Total Invested ${formatUnits(args.totalAssetsInvested, 6)} USDC`);
+                refetchVaultDetails();
+            } catch (e) {
+                console.error("Error decoding vault FundingClosed event:", e);
+                setStatusMessage("Error processing vault FundingClosed event.");
+            }
         });
     }
   });
@@ -139,15 +185,26 @@ export function DirectProjectVaultAdmin() {
     address: vaultAddress, abi: directProjectVaultAbi, eventName: 'LoanClosed',
     onLogs(logs) {
         logs.forEach(log => {
-            const args = (log as any).args as LoanClosedEventArgs;
-            setVaultActionEvents(prev => [...prev, {eventName: 'LoanClosed', ...args}]);
-            setStatusMessage(`Vault LoanClosed: Interest Accrued ${formatUnits(args.totalInterestAccrued, 6)} USDC`);
-            refetchVaultDetails();
+            try {
+                const decoded = decodeEventLog({
+                    abi: directProjectVaultAbi,
+                    data: log.data,
+                    topics: log.topics,
+                    eventName: 'LoanClosed'
+                });
+                const args = decoded.args as unknown as LoanClosedEventArgs;
+                setVaultActionEvents(prev => [...prev, args]);
+                setStatusMessage(`Vault LoanClosed: Interest Accrued ${formatUnits(args.totalInterestAccrued, 6)} USDC`);
+                refetchVaultDetails();
+            } catch (e) {
+                console.error("Error decoding vault LoanClosed event:", e);
+                setStatusMessage("Error processing vault LoanClosed event.");
+            }
         });
     }
   });
 
-  const refetchVaultDetails = () => {
+  const refetchVaultDetails = useCallback(() => {
     if (vaultAddress) {
       fetchTotalAssets();
       fetchIsFundingClosed();
@@ -155,27 +212,27 @@ export function DirectProjectVaultAdmin() {
       fetchCurrentApr();
       // Add other refetches here
     }
-  };
+  }, [vaultAddress, fetchTotalAssets, fetchIsFundingClosed, fetchIsLoanClosed, fetchCurrentApr]);
 
   useEffect(() => {
     if (vaultAddress) refetchVaultDetails();
     else setVaultDetails(null); // Clear details if no vault address
-  }, [vaultAddress]);
+  }, [vaultAddress, refetchVaultDetails]);
 
   useEffect(() => {
     if (totalAssetsData !== undefined && isFundingClosedData !== undefined && isLoanClosedData !== undefined && currentAprData !== undefined) {
         setVaultDetails({
             totalAssetsInvested: formatUnits(totalAssetsData as bigint, 6),
-            isFundingClosed: isFundingClosedData,
-            isLoanClosed: isLoanClosedData,
-            currentAprBps: currentAprData,
+            isFundingClosed: isFundingClosedData as boolean,
+            isLoanClosed: isLoanClosedData as boolean,
+            currentAprBps: currentAprData as bigint,
             // Add other details as they are fetched
         });
     }
   }, [totalAssetsData, isFundingClosedData, isLoanClosedData, currentAprData]);
 
 
-  const handleWriteToVault = (functionName: string, args: any[], successMessage?: string) => {
+  const handleWriteToVault = (functionName: string, args: unknown[], successMessage?: string) => {
     if (!vaultAddress) { setStatusMessage('Vault address not set.'); return; }
     writeContract({
       address: vaultAddress,
@@ -199,7 +256,12 @@ export function DirectProjectVaultAdmin() {
   };
 
   const handleVaultCheckHasRole = () => {
-    if (!checkRoleBytes32Vault || !roleManagementAddress) { setStatusMessage('Role or account for vault role check missing.'); return; }
+    if (!selectedRoleBytes32 || !roleManagementAddress) { 
+        setStatusMessage('Role or account for vault role check missing.'); 
+        setHasRoleResultVault(null);
+        return; 
+    }
+    setHasRoleResultVault(null); // Clear previous result
     fetchHasRoleVault();
   };
 
@@ -215,7 +277,7 @@ export function DirectProjectVaultAdmin() {
     if (isConfirmed) { setStatusMessage(`Vault Tx Successful: ${writeHash?.substring(0,10)}...`); refetchVaultDetails(); }
     if (writeError) { setStatusMessage(`Vault Tx Error: ${writeError.message}`); }
     if (receiptError) { setStatusMessage(`Vault Receipt Error: ${receiptError.message}`); }
-  }, [isConfirmed, writeHash, writeError, receiptError]);
+  }, [isConfirmed, writeHash, writeError, receiptError, refetchVaultDetails]);
 
   return (
     <div className="space-y-8 p-4 border rounded-lg shadow-md bg-white">
@@ -284,7 +346,9 @@ export function DirectProjectVaultAdmin() {
                 <button onClick={handleVaultRevokeRole} disabled={!selectedRoleBytes32 || !roleManagementAddress || isWritePending || isConfirming} className="button-style bg-red-500 hover:bg-red-600">Revoke Role on Vault</button>
             </div>
              <div>
-                <button onClick={handleVaultCheckHasRole} disabled={!checkRoleBytes32Vault || !roleManagementAddress} className="button-style bg-teal-500 hover:bg-teal-600 mt-1">Check Role on Vault</button>
+                <button onClick={handleVaultCheckHasRole} disabled={!selectedRoleBytes32 || !roleManagementAddress || isHasRoleLoadingVault} className="button-style bg-teal-500 hover:bg-teal-600 mt-1">
+                    {isHasRoleLoadingVault ? 'Checking...' : 'Check Role on Vault'}
+                </button>
                 {hasRoleResultVault !== null && <p className="text-sm mt-1">Has Role on Vault: {hasRoleResultVault.toString()}</p>}
             </div>
           </div>
@@ -295,16 +359,30 @@ export function DirectProjectVaultAdmin() {
               <h3 className="text-lg font-medium text-black mb-2">Recent Vault Role Events</h3>
               {roleEvents.length === 0 && <p className="text-xs text-gray-500">No role events for this vault.</p>}
               <ul className="text-xs space-y-1">
-                {roleEvents.filter(event => (event as any).address?.toLowerCase() === vaultAddress.toLowerCase() || !(event as any).address ) /* crude filter, better with topics */
-                .slice(-5).reverse().map((event: any, i) => <li key={`vrole-${i}`}>{`${event.eventName}: ${roleHashMap[event.role] || event.role} to/from ${event.account}`}</li>)}
+                {roleEvents
+                .slice(-5).reverse().map((event: RoleGrantedEventArgs | RoleRevokedEventArgs, i) => {
+                  const eventName = 'sender' in event ? 'RoleGranted' : 'RoleRevoked';
+                  return <li key={`vrole-${i}`}>{`${eventName}: ${roleHashMap[event.role] || event.role} to/from ${event.account}`}</li>
+                })}
               </ul>
             </div>
             <div className="p-4 border rounded bg-gray-50">
               <h3 className="text-lg font-medium text-black mb-2">Recent Vault Action Events</h3>
               {vaultActionEvents.length === 0 && <p className="text-xs text-gray-500">No action events for this vault.</p>}
               <ul className="text-xs space-y-1">
-                {vaultActionEvents.filter(event => (event as any).address?.toLowerCase() === vaultAddress.toLowerCase() || !(event as any).address)
-                .slice(-5).reverse().map((event: any, i) => <li key={`vaction-${i}`}>{`${event.eventName}: ${JSON.stringify(event.args)}`}</li>)}
+                {vaultActionEvents
+                .slice(-5).reverse().map((event: FundingClosedEventArgs | LoanClosedEventArgs, i) => {
+                  let eventName = 'Unknown Event';
+                  let eventDetails = '';
+                  if ('totalAssetsInvested' in event) {
+                    eventName = 'FundingClosed';
+                    eventDetails = `Total Invested: ${formatUnits(event.totalAssetsInvested, 6)} USDC, Dev: ${event.developer.substring(0,6)}...`;
+                  } else if ('totalInterestAccrued' in event) {
+                    eventName = 'LoanClosed';
+                    eventDetails = `Total Interest: ${formatUnits(event.totalInterestAccrued, 6)} USDC`;
+                  }
+                  return <li key={`vaction-${i}`}>{`${eventName}: ${eventDetails}`}</li>
+                })}
               </ul>
             </div>
           </div>

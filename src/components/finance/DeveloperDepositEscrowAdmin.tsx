@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
-import { Address, Abi, decodeEventLog, Hex, keccak256, toHex, bytesToString, hexToBytes } from 'viem';
+import { Address, Abi, decodeEventLog, Hex, keccak256, toHex } from 'viem';
 import developerDepositEscrowAbiJson from '@/abis/DeveloperDepositEscrow.json';
 import constantsAbiJson from '@/abis/Constants.json';
 
@@ -32,6 +32,12 @@ type DepositSlashedEventArgs = {
   amount: bigint; // uint256
   recipient: Address;
 };
+
+interface DepositInfo {
+  amount: string;
+  developer: Address;
+  isSettled: boolean;
+}
 
 const DEVELOPER_DEPOSIT_ESCROW_ADDRESS = process.env.NEXT_PUBLIC_DEVELOPER_DEPOSIT_ESCROW_ADDRESS as Address | undefined;
 
@@ -68,7 +74,7 @@ const createRoleHashMap = (roleNames: string[]): { [hash: Hex]: string } => {
 };
 
 export function DeveloperDepositEscrowAdmin() {
-  const { address: connectedAddress } = useAccount();
+  const { } = useAccount(); // connectedAddress removed as it was unused
   const { data: writeHash, writeContract, isPending: isWritePending, error: writeError } = useWriteContract();
   const { isLoading: isConfirming, isSuccess: isConfirmed, error: receiptError } = useWaitForTransactionReceipt({ hash: writeHash });
 
@@ -98,7 +104,7 @@ export function DeveloperDepositEscrowAdmin() {
   const [manageDepositProjectId, setManageDepositProjectId] = useState<string>('');
   const [slashFeeRecipient, setSlashFeeRecipient] = useState<string>('');
   const [viewDepositProjectId, setViewDepositProjectId] = useState<string>('');
-  const [depositInfo, setDepositInfo] = useState<any | null>(null);
+  const [depositInfo, setDepositInfo] = useState<DepositInfo | null>(null);
 
   // --- Read Hooks ---
   const { data: pausedData, refetch: refetchPaused } = useReadContract({
@@ -160,10 +166,14 @@ export function DeveloperDepositEscrowAdmin() {
         const roleHash = keccak256(roleHex);
         setSelectedRoleBytes32(roleHash);
         setStatusMessage('');
-      } catch (e: any) {
+      } catch (e: unknown) {
         console.error("Error computing role hash:", e);
         setSelectedRoleBytes32(null);
-        setStatusMessage(`Error computing role hash: ${e.message}`);
+        if (e instanceof Error) {
+            setStatusMessage(`Error computing role hash: ${e.message}`);
+        } else {
+            setStatusMessage('An unknown error occurred while computing role hash.');
+        }
       }
     } else {
       setSelectedRoleBytes32(null);
@@ -181,10 +191,14 @@ export function DeveloperDepositEscrowAdmin() {
           const roleHash = keccak256(roleHex);
           setCheckRoleBytes32(roleHash);
           setHasRoleStatus('');
-        } catch (e: any) {
+        } catch (e: unknown) {
           console.error("Error computing check role hash:", e);
           setCheckRoleBytes32(null);
-          setHasRoleStatus(`Error computing role hash for check: ${e.message}`);
+          if (e instanceof Error) {
+            setHasRoleStatus(`Error computing role hash for check: ${e.message}`);
+          } else {
+            setHasRoleStatus('An unknown error occurred while computing check role hash.');
+          }
         }
       }
     } else {
@@ -321,7 +335,7 @@ export function DeveloperDepositEscrowAdmin() {
     }
   });
 
-  const refetchAll = () => {
+  const refetchAll = useCallback(() => {
     refetchPaused();
     // Call refetch for other specific data if added
     if (viewDepositProjectId) { // If a project ID is being viewed, refetch its details
@@ -329,9 +343,9 @@ export function DeveloperDepositEscrowAdmin() {
         fetchProjectDeveloper();
         fetchIsDepositSettled();
     }
-  };
+  }, [refetchPaused, viewDepositProjectId, fetchDepositAmount, fetchProjectDeveloper, fetchIsDepositSettled]);
 
-  const handleWrite = (functionName: string, args: any[], successMessage?: string) => {
+  const handleWrite = (functionName: string, args: unknown[], successMessage?: string) => {
     if (!DEVELOPER_DEPOSIT_ESCROW_ADDRESS) { setStatusMessage('Developer Deposit Escrow contract address not set'); return; }
     setStatusMessage('');
     writeContract({
@@ -357,8 +371,12 @@ export function DeveloperDepositEscrowAdmin() {
     try {
       const to = grantRoleToAddress as Address;
       handleWrite('grantRole', [selectedRoleBytes32, to], `Granting ${selectedRoleName} to ${to}...`);
-    } catch (e: any) {
-      setStatusMessage(`Error preparing grantRole transaction: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Error preparing grantRole transaction: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while preparing grantRole transaction.');
+      }
     }
   };
 
@@ -374,8 +392,12 @@ export function DeveloperDepositEscrowAdmin() {
     try {
       const from = revokeRoleFromAddress as Address;
       handleWrite('revokeRole', [selectedRoleBytes32, from], `Revoking ${selectedRoleName} from ${from}...`);
-    } catch (e: any) {
-      setStatusMessage(`Error preparing revokeRole transaction: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Error preparing revokeRole transaction: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while preparing revokeRole transaction.');
+      }
     }
   };
 
@@ -403,14 +425,26 @@ export function DeveloperDepositEscrowAdmin() {
     if (!manageDepositProjectId) { setStatusMessage('Please enter Project ID for release.'); return; }
     try {
       handleWrite('releaseDeposit', [BigInt(manageDepositProjectId)], `Releasing deposit for Project ID ${manageDepositProjectId}...`);
-    } catch (e: any) { setStatusMessage(`Error preparing releaseDeposit: ${e.message}`); }
+    } catch (e: unknown) {
+        if (e instanceof Error) {
+            setStatusMessage(`Error preparing releaseDeposit: ${e.message}`);
+        } else {
+            setStatusMessage('An unknown error occurred while preparing releaseDeposit.');
+        }
+    }
   };
 
   const handleSlashDeposit = () => {
     if (!manageDepositProjectId || !slashFeeRecipient) { setStatusMessage('Please enter Project ID and Fee Recipient for slash.'); return; }
     try {
       handleWrite('slashDeposit', [BigInt(manageDepositProjectId), slashFeeRecipient as Address], `Slashing deposit for Project ID ${manageDepositProjectId} to ${slashFeeRecipient}...`);
-    } catch (e: any) { setStatusMessage(`Error preparing slashDeposit: ${e.message}`); }
+    } catch (e: unknown) {
+        if (e instanceof Error) {
+            setStatusMessage(`Error preparing slashDeposit: ${e.message}`);
+        } else {
+            setStatusMessage('An unknown error occurred while preparing slashDeposit.');
+        }
+    }
   };
 
   const handleViewDepositStatus = () => {
@@ -654,7 +688,7 @@ export function DeveloperDepositEscrowAdmin() {
         <ul className="space-y-3">
           {roleEvents.slice(-5).map((event, index) => { // Display last 5 events
             const roleName = roleHashMap[event.role] || event.role; // Fallback to hash
-            const eventType = (event as any).sender ? 'RoleGranted' : 'RoleRevoked'; // Basic type check
+            const eventType = event.sender ? 'RoleGranted' : 'RoleRevoked'; // Simplified, check specific event type if needed
             return (
               <li key={index} className="p-3 bg-white border border-gray-200 rounded shadow-sm">
                 <p className="text-sm text-black"><strong>Event: {eventType}</strong></p>

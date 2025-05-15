@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
-import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
-import { parseUnits, formatUnits, Address, decodeEventLog } from 'viem';
+import React, { useState, useEffect, useCallback } from 'react';
+import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent, useBalance } from 'wagmi';
+import { parseUnits, formatUnits, Address, decodeEventLog} from 'viem';
 // import mockUsdcAbiJson from '../../out-finance/MockUSDC.sol/MockUSDC.json'; // Adjusted path
 import mockUsdcAbiJson from '@/abis/MockUSDC.json'; // Use alias for new path
 
@@ -16,10 +16,12 @@ type MintedEventArgs = {
 // Ensure your .env.local file has NEXT_PUBLIC_MOCK_USDC_ADDRESS set
 const MOCK_USDC_ADDRESS = process.env.NEXT_PUBLIC_MOCK_USDC_ADDRESS as Address | undefined;
 
+const mockUsdcAbi = mockUsdcAbiJson.abi;
+
 export function MockUsdcAdmin() {
-  const { address: connectedAddress } = useAccount();
-  const { data: hash, writeContract, isPending: isMintPending, error: mintError } = useWriteContract();
-  const { isLoading: isConfirming, isSuccess: isConfirmed, error: receiptError } = useWaitForTransactionReceipt({ hash });
+  const {} = useAccount();
+  const { data: writeHash, writeContract, isPending: isWritePending, error: writeError } = useWriteContract();
+  const { isLoading: isConfirming, isSuccess: isConfirmed, error: receiptError } = useWaitForTransactionReceipt({ hash: writeHash });
 
   const [toAddress, setToAddress] = useState<string>('');
   const [mintAmount, setMintAmount] = useState<string>('');
@@ -29,56 +31,52 @@ export function MockUsdcAdmin() {
   const [fetchedBalance, setFetchedBalance] = useState<string | null>(null);
   const [lastMintEvent, setLastMintEvent] = useState<MintedEventArgs | null>(null);
 
-  const { data: balance, refetch: fetchBalance, isLoading: isBalanceLoading, error: balanceError } = useReadContract({
-    address: MOCK_USDC_ADDRESS,
-    abi: mockUsdcAbiJson.abi,
-    functionName: 'balanceOf',
-    args: balanceAccountAddress ? [balanceAccountAddress as Address] : undefined,
+  const { data: balanceData, refetch: fetchBalanceForAddress, isLoading: isBalanceLoading } = useBalance({
+    address: balanceAccountAddress as Address | undefined,
+    token: MOCK_USDC_ADDRESS,
     query: {
-      enabled: false, // Only fetch when refetch is called
-    },
+      enabled: !!MOCK_USDC_ADDRESS && !!balanceAccountAddress,
+    }
   });
 
   useEffect(() => {
-    if (balance !== undefined && balance !== null) {
-      // Properly cast balance to bigint
-      setFetchedBalance(formatUnits(balance as bigint, 6)); 
+    if (balanceData) {
+      setFetchedBalance(balanceData.formatted);
     }
-  }, [balance]);
+  }, [balanceData]);
   
   useWatchContractEvent({
     address: MOCK_USDC_ADDRESS,
-    abi: mockUsdcAbiJson.abi,
+    abi: mockUsdcAbi,
     eventName: 'Minted',
     onLogs(logs) {
       console.log('Minted event raw logs:', JSON.stringify(logs, null, 2));
       if (logs.length > 0) {
         try {
           const log = logs[0];
-          // Use decodeEventLog to properly parse the event data
           const decoded = decodeEventLog({
-            abi: mockUsdcAbiJson.abi,
+            abi: mockUsdcAbi,
             data: log.data,
             topics: log.topics,
             eventName: 'Minted'
           });
           
-          // Now we can safely access the args
-          const args = decoded.args as unknown[];
-          // Minted event has indexed minter, indexed to, amount parameters in that order
-          const minter = args[0] as Address;
-          const to = args[1] as Address;
-          const amount = args[2] as bigint;
-          
-          setLastMintEvent({ minter, to, amount });
-          setMintStatus(`Minted event received! Minter: ${minter}, To: ${to}, Amount: ${formatUnits(amount, 6)} USDC`);
+          const eventArgs = decoded.args as unknown as MintedEventArgs;
+
+          if (eventArgs && typeof eventArgs.minter === 'string' && typeof eventArgs.to === 'string' && typeof eventArgs.amount === 'bigint') {
+            setLastMintEvent(eventArgs);
+            setMintStatus(`Minted event! Minter: ${eventArgs.minter}, To: ${eventArgs.to}, Amount: ${formatUnits(eventArgs.amount, 6)} USDC`);
+          } else {
+            console.error('Decoded Minted event args do not match expected structure:', decoded.args);
+            setMintStatus('Error: Parsed Minted event data has unexpected structure.');
+          }
         } catch (error) {
           console.error('Error decoding Minted event:', error);
           setMintStatus('Error parsing Minted event data.');
         }
       } else {
-        console.warn('Minted event logs received, but no logs found.');
-        setMintStatus('Minted event received, but data is missing.');
+        // This case might not be an error, could just be no events in this batch.
+        // console.warn('Minted event logs received, but no logs found in this batch.');
       }
     },
     onError(error) {
@@ -87,7 +85,15 @@ export function MockUsdcAdmin() {
     }
   });
 
-  const handleMint = async () => {
+  const refetchAll = useCallback(() => {
+    if (MOCK_USDC_ADDRESS) {
+      if (balanceAccountAddress) {
+        fetchBalanceForAddress();
+      }
+    }
+  }, [balanceAccountAddress, fetchBalanceForAddress]);
+
+  const handleMint = () => {
     if (!MOCK_USDC_ADDRESS) {
       setMintStatus('MockUSDC contract address not set in .env');
       return;
@@ -101,13 +107,24 @@ export function MockUsdcAdmin() {
       const amountInSmallestUnit = parseUnits(mintAmount, 6); // Assuming 6 decimals
       writeContract({
         address: MOCK_USDC_ADDRESS,
-        abi: mockUsdcAbiJson.abi,
+        abi: mockUsdcAbi,
         functionName: 'mint',
         args: [toAddress as Address, amountInSmallestUnit],
+      }, {
+        onSuccess: () => { setMintStatus(`Minting ${mintAmount} USDC to ${toAddress}...`); refetchAll(); },
+        onError: (error) => {
+          console.error("Minting error:", error);
+          setMintStatus(`Minting error: ${error.message}`);
+        },
       });
-    } catch (e: any) {
-      console.error("Minting error:", e);
-      setMintStatus(`Minting error: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        console.error("Minting error:", e);
+        setMintStatus(`Minting error: ${e.message}`);
+      } else {
+        console.error("An unknown error occurred during mint preparation.");
+        setMintStatus("An unknown error occurred during mint preparation.");
+      }
     }
   };
 
@@ -117,25 +134,39 @@ export function MockUsdcAdmin() {
       return;
     }
     if (balanceAccountAddress) {
-      fetchBalance();
+      refetchAll();
     } else {
       setFetchedBalance("Please enter an account address.");
     }
   };
   
+  // Move this hook definition BEFORE the useEffect that depends on it
+  const { data: totalSupplyData, refetch: refetchTotalSupply } = useReadContract({
+    address: MOCK_USDC_ADDRESS,
+    abi: mockUsdcAbi,
+    functionName: 'totalSupply',
+    query: { enabled: !!MOCK_USDC_ADDRESS }
+  });
+  
   useEffect(() => {
     if (isConfirmed) {
-      setMintStatus(`Successfully minted! Transaction hash: ${hash}`);
-      // Optionally, refetch balance of 'toAddress' or connectedAddress if they were the recipient
-      if (toAddress === balanceAccountAddress) {
-        fetchBalance();
+      setMintStatus(`Successfully minted! Transaction hash: ${writeHash}`);
+      if (toAddress.toLowerCase() === balanceAccountAddress.toLowerCase()) {
+        refetchAll();
+      } else {
+        if (MOCK_USDC_ADDRESS) refetchTotalSupply();
       }
     }
-    if (mintError || receiptError) {
-      setMintStatus(`Error: ${mintError?.message || receiptError?.message}`);
+    if (writeError || receiptError) {
+      setMintStatus(`Error: ${writeError?.message || receiptError?.message}`);
     }
-  }, [isConfirmed, hash, mintError, receiptError, toAddress, balanceAccountAddress, fetchBalance]);
+  }, [isConfirmed, writeHash, writeError, receiptError, toAddress, balanceAccountAddress, refetchAll, refetchTotalSupply]);
 
+  useEffect(() => {
+    if (balanceData) {
+      setFetchedBalance(balanceData.formatted);
+    }
+  }, [balanceData]);
 
   if (!MOCK_USDC_ADDRESS) {
     return <p className="text-red-500">Error: NEXT_PUBLIC_MOCK_USDC_ADDRESS is not set in your .env.local file.</p>;
@@ -172,13 +203,13 @@ export function MockUsdcAdmin() {
         </div>
         <button
           onClick={handleMint}
-          disabled={isMintPending || isConfirming}
+          disabled={isWritePending || isConfirming || !toAddress || !mintAmount}
           className="px-4 py-2 bg-blue-600 text-white rounded hover:bg-blue-700 disabled:bg-gray-400 disabled:text-gray-600 disabled:cursor-not-allowed"
         >
-          {isMintPending ? 'Minting...' : isConfirming ? 'Confirming...' : 'Mint USDC'}
+          {isWritePending ? 'Minting...' : isConfirming ? 'Confirming...' : 'Mint USDC'}
         </button>
         {mintStatus && (
-            <p className={`text-sm mt-2 font-medium ${mintError || receiptError ? 'text-red-700' : isConfirmed ? 'text-green-700' : 'text-blue-700'}`}>
+            <p className={`text-sm mt-2 font-medium ${writeError || receiptError ? 'text-red-700' : isConfirmed ? 'text-green-700' : 'text-blue-700'}`}>
                 {mintStatus}
             </p>
         )}
@@ -213,8 +244,23 @@ export function MockUsdcAdmin() {
         >
           {isBalanceLoading ? 'Fetching...' : 'Get Balance'}
         </button>
-        {balanceError && <p className="text-red-600 text-sm font-medium mt-2">Error fetching balance: {balanceError.message}</p>}
         {fetchedBalance !== null && <p className="text-sm mt-2 text-black"><strong>Balance:</strong> {fetchedBalance} USDC</p>}
+      </div>
+
+      {/* Total Supply Section */}
+      <div className="space-y-4 p-4 border rounded bg-gray-50">
+        <h3 className="text-xl font-medium text-black">Total Supply</h3>
+        <button
+          onClick={() => refetchTotalSupply()}
+          className="px-4 py-2 bg-purple-600 text-white rounded hover:bg-purple-700 disabled:bg-gray-400"
+        >
+          Refresh Total Supply
+        </button>
+        {totalSupplyData !== undefined && (
+          <p className="text-sm mt-2 text-black">
+            <strong>Total Supply:</strong> {formatUnits(totalSupplyData as bigint, 6)} USDC
+          </p>
+        )}
       </div>
     </div>
   );

@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
-import { Address, Abi, decodeEventLog, Hex, keccak256, toHex, parseUnits } from 'viem';
+import { Address, Abi, decodeEventLog, Hex, keccak256, toHex } from 'viem';
 import riskRateOracleAdapterAbiJson from '@/abis/RiskRateOracleAdapter.json';
 import constantsAbiJson from '@/abis/Constants.json';
 
@@ -10,7 +10,6 @@ type RoleGrantedEventArgs = { role: Hex; account: Address; sender: Address; };
 type RoleRevokedEventArgs = { role: Hex; account: Address; sender: Address; };
 type ProjectRiskLevelSetEventArgs = { projectId: bigint; riskLevel: number; /* uint16 */ };
 type RiskParamsPushedEventArgs = { projectId: bigint; aprBps: number; /* uint16 */ tenor: bigint; /* uint48 */ };
-type BatchRiskAssessmentTriggeredEventArgs = { /* Potentially timestamp or caller */ };
 type PeriodicAssessmentRequestedEventArgs = { projectId: bigint; lastAssessmentTimestamp: bigint; };
 type AssessmentIntervalUpdatedEventArgs = { newInterval: bigint; oldInterval: bigint; };
 
@@ -40,7 +39,7 @@ const createRoleHashMap = (roleNames: string[]): { [hash: Hex]: string } => {
 };
 
 export function RiskRateOracleAdapterAdmin() {
-  const { address: connectedAddress } = useAccount();
+  const {} = useAccount();
   const { data: writeHash, writeContract, isPending: isWritePending, error: writeError } = useWriteContract();
   const { isLoading: isConfirming, isSuccess: isConfirmed, error: receiptError } = useWaitForTransactionReceipt({ hash: writeHash });
 
@@ -54,7 +53,13 @@ export function RiskRateOracleAdapterAdmin() {
   const [grantRoleToAddress, setGrantRoleToAddress] = useState<string>('');
   const [revokeRoleFromAddress, setRevokeRoleFromAddress] = useState<string>('');
   const [roleEvents, setRoleEvents] = useState<(RoleGrantedEventArgs | RoleRevokedEventArgs)[]>([]);
-  const [oracleEvents, setOracleEvents] = useState<any[]>([]); // Generic for oracle specific events
+  const [oracleEvents, setOracleEvents] = useState<(
+    (ProjectRiskLevelSetEventArgs & { eventName: 'ProjectRiskLevelSet' }) | 
+    (RiskParamsPushedEventArgs & { eventName: 'RiskParamsPushed' }) | 
+    (PeriodicAssessmentRequestedEventArgs & { eventName: 'PeriodicAssessmentRequested' }) | 
+    (AssessmentIntervalUpdatedEventArgs & { eventName: 'AssessmentIntervalUpdated' }) |
+    { eventName: 'BatchRiskAssessmentTriggered' }
+  )[]>([]);
   const [roleHashMap, setRoleHashMap] = useState<{ [hash: Hex]: string }>({});
   const [statusMessage, setStatusMessage] = useState<string>('');
   // Add state for other events if needed
@@ -149,7 +154,14 @@ export function RiskRateOracleAdapterAdmin() {
       try {
         setSelectedRoleBytes32(keccak256(toHex(selectedRoleName)));
         setStatusMessage('');
-      } catch (e: any) { setSelectedRoleBytes32(null); setStatusMessage(`Error computing role hash: ${e.message}`); }
+      } catch (e: unknown) { 
+        setSelectedRoleBytes32(null); 
+        if (e instanceof Error) {
+            setStatusMessage(`Error computing role hash: ${e.message}`);
+        } else {
+            setStatusMessage('An unknown error occurred while computing role hash.');
+        }
+      }
     } else { setSelectedRoleBytes32(null); }
   }, [selectedRoleName]);
 
@@ -162,9 +174,13 @@ export function RiskRateOracleAdapterAdmin() {
         try {
           setCheckRoleBytes32(keccak256(toHex(checkRoleName)));
           setHasRoleStatus('');
-        } catch (e: any) { 
+        } catch (e: unknown) { 
           setCheckRoleBytes32(null); 
-          setHasRoleStatus(`Error computing role hash for check: ${e.message}`); 
+          if (e instanceof Error) {
+            setHasRoleStatus(`Error computing role hash for check: ${e.message}`); 
+          } else {
+            setHasRoleStatus('An unknown error occurred while computing role hash for check.');
+          }
         }
       }
     } else { setCheckRoleBytes32(null); }
@@ -182,7 +198,7 @@ export function RiskRateOracleAdapterAdmin() {
           const roleName = roleHashMap[args.role] || args.role; // Fallback to hash
           setRoleEvents(prev => [...prev, args]);
           setStatusMessage(`RoleGranted Event: Role ${roleName} (${args.role.substring(0,10)}...) granted to ${args.account}`);
-        } catch (e) { console.error("Error decoding RoleGranted:", e); setStatusMessage("Error processing RoleGranted event."); }
+        } catch (e: unknown) { console.error("Error decoding RoleGranted:", e); setStatusMessage("Error processing RoleGranted event."); }
       });
     },
     onError: (error) => { console.error('Error watching RoleGranted event:', error); setStatusMessage(`Error watching RoleGranted event: ${error.message}`);}
@@ -200,7 +216,7 @@ export function RiskRateOracleAdapterAdmin() {
           const roleName = roleHashMap[args.role] || args.role;
           setRoleEvents(prev => [...prev, args]);
           setStatusMessage(`RoleRevoked Event: Role ${roleName} (${args.role.substring(0,10)}...) revoked from ${args.account}`);
-        } catch (e) { console.error("Error decoding RoleRevoked:", e); setStatusMessage("Error processing RoleRevoked event."); }
+        } catch (e: unknown) { console.error("Error decoding RoleRevoked:", e); setStatusMessage("Error processing RoleRevoked event."); }
       });
     },
     onError: (error) => { console.error('Error watching RoleRevoked event:', error); setStatusMessage(`Error watching RoleRevoked event: ${error.message}`);}
@@ -215,9 +231,9 @@ export function RiskRateOracleAdapterAdmin() {
         try {
           const decoded = decodeEventLog({ abi: riskRateOracleAdapterAbi, data: log.data, topics: log.topics, eventName: 'ProjectRiskLevelSet' });
           const args = decoded.args as unknown as ProjectRiskLevelSetEventArgs;
-          setOracleEvents(prev => [...prev, {eventName: 'ProjectRiskLevelSet', ...args}]);
+          setOracleEvents(prev => [...prev, { ...args, eventName: 'ProjectRiskLevelSet' as const }]);
           setStatusMessage(`ProjectRiskLevelSet: Project ${args.projectId.toString()}, Level ${args.riskLevel}`);
-        } catch (e) { console.error("Error decoding ProjectRiskLevelSet:", e); setStatusMessage("Error processing ProjectRiskLevelSet event."); }
+        } catch (e: unknown) { console.error("Error decoding ProjectRiskLevelSet:", e); setStatusMessage("Error processing ProjectRiskLevelSet event."); }
       });
     },
     onError: (error) => { console.error('Error watching ProjectRiskLevelSet event:', error); setStatusMessage(`Error watching ProjectRiskLevelSet event: ${error.message}`);}
@@ -232,9 +248,9 @@ export function RiskRateOracleAdapterAdmin() {
         try {
           const decoded = decodeEventLog({ abi: riskRateOracleAdapterAbi, data: log.data, topics: log.topics, eventName: 'RiskParamsPushed' });
           const args = decoded.args as unknown as RiskParamsPushedEventArgs;
-          setOracleEvents(prev => [...prev, {eventName: 'RiskParamsPushed', ...args}]);
+          setOracleEvents(prev => [...prev, { ...args, eventName: 'RiskParamsPushed' as const }]);
           setStatusMessage(`RiskParamsPushed: Project ${args.projectId.toString()}, APR ${args.aprBps}bps, Tenor ${args.tenor.toString()}`);
-        } catch (e) { console.error("Error decoding RiskParamsPushed:", e); setStatusMessage("Error processing RiskParamsPushed event."); }
+        } catch (e: unknown) { console.error("Error decoding RiskParamsPushed:", e); setStatusMessage("Error processing RiskParamsPushed event."); }
       });
     }
   });
@@ -243,8 +259,8 @@ export function RiskRateOracleAdapterAdmin() {
     address: RISK_RATE_ORACLE_ADAPTER_ADDRESS,
     abi: riskRateOracleAdapterAbi,
     eventName: 'BatchRiskAssessmentTriggered',
-    onLogs(logs) {
-        setOracleEvents(prev => [...prev, {eventName: 'BatchRiskAssessmentTriggered'}]);
+    onLogs() {
+        setOracleEvents(prev => [...prev, {eventName: 'BatchRiskAssessmentTriggered' as const}]);
         setStatusMessage('BatchRiskAssessmentTriggered event received.');
     }
   });
@@ -258,9 +274,9 @@ export function RiskRateOracleAdapterAdmin() {
         try {
           const decoded = decodeEventLog({ abi: riskRateOracleAdapterAbi, data: log.data, topics: log.topics, eventName: 'PeriodicAssessmentRequested' });
           const args = decoded.args as unknown as PeriodicAssessmentRequestedEventArgs;
-          setOracleEvents(prev => [...prev, {eventName: 'PeriodicAssessmentRequested', ...args}]);
+          setOracleEvents(prev => [...prev, { ...args, eventName: 'PeriodicAssessmentRequested' as const }]);
           setStatusMessage(`PeriodicAssessmentRequested: Project ${args.projectId.toString()}`);
-        } catch (e) { console.error("Error decoding PeriodicAssessmentRequested:", e); setStatusMessage("Error processing PeriodicAssessmentRequested event."); }
+        } catch (e: unknown) { console.error("Error decoding PeriodicAssessmentRequested:", e); setStatusMessage("Error processing PeriodicAssessmentRequested event."); }
       });
     }
   });
@@ -274,10 +290,10 @@ export function RiskRateOracleAdapterAdmin() {
         try {
           const decoded = decodeEventLog({ abi: riskRateOracleAdapterAbi, data: log.data, topics: log.topics, eventName: 'AssessmentIntervalUpdated' });
           const args = decoded.args as unknown as AssessmentIntervalUpdatedEventArgs;
-          setOracleEvents(prev => [...prev, {eventName: 'AssessmentIntervalUpdated', ...args}]);
+          setOracleEvents(prev => [...prev, { ...args, eventName: 'AssessmentIntervalUpdated' as const }]);
           setStatusMessage(`AssessmentIntervalUpdated: New ${args.newInterval.toString()}, Old ${args.oldInterval.toString()}`);
-          refetchInterval(); // refetch to update display
-        } catch (e) { console.error("Error decoding AssessmentIntervalUpdated:", e); setStatusMessage("Error processing AssessmentIntervalUpdated event."); }
+          refetchInterval();
+        } catch (e: unknown) { console.error("Error decoding AssessmentIntervalUpdated:", e); setStatusMessage("Error processing AssessmentIntervalUpdated event."); }
       });
     }
   });
@@ -293,7 +309,7 @@ export function RiskRateOracleAdapterAdmin() {
     }
   }, [hasRoleData, hasRoleError]);
 
-  const refetchAll = () => { 
+  const refetchAll = useCallback(() => { 
     refetchPaused(); 
     refetchInterval(); 
     if (viewConfigProjectId) {
@@ -302,9 +318,9 @@ export function RiskRateOracleAdapterAdmin() {
         fetchProjectRiskLevel();
         fetchLastAssessment();
     }
-  };
+  }, [refetchPaused, refetchInterval, viewConfigProjectId, fetchTargetContract, fetchPoolId, fetchProjectRiskLevel, fetchLastAssessment]);
 
-  const handleWrite = (functionName: string, args: any[], successMsg?: string) => {
+  const handleWrite = (functionName: string, args: unknown[], successMsg?: string) => {
     if (!RISK_RATE_ORACLE_ADAPTER_ADDRESS) { setStatusMessage('Contract address not set'); return; }
     setStatusMessage('');
     writeContract({ address: RISK_RATE_ORACLE_ADAPTER_ADDRESS, abi: riskRateOracleAdapterAbi, functionName, args },
@@ -337,7 +353,10 @@ export function RiskRateOracleAdapterAdmin() {
     try {
         const intervalBigInt = BigInt(newInterval);
         handleWrite('setAssessmentInterval', [intervalBigInt], 'Setting assessment interval...');
-    } catch (e:any) { setStatusMessage(`Invalid interval: ${e.message}`); }
+    } catch (e: unknown) { 
+        if (e instanceof Error) setStatusMessage(`Invalid interval: ${e.message}`);
+        else setStatusMessage('An unknown error occurred while setting interval.');
+    }
   };
 
   // --- Oracle Function Handlers ---
@@ -348,7 +367,10 @@ export function RiskRateOracleAdapterAdmin() {
       const riskLevel = parseInt(riskLevelToSet, 10);
       if (isNaN(riskLevel) || riskLevel < 1 || riskLevel > 3) { setStatusMessage('Risk level must be 1, 2, or 3.'); return; }
       handleWrite('setProjectRiskLevel', [projectId, riskLevel], `Setting Project ${projectId} risk level to ${riskLevel}...`);
-    } catch (e: any) { setStatusMessage(`Error: ${e.message}`); }
+    } catch (e: unknown) { 
+        if (e instanceof Error) setStatusMessage(`Error: ${e.message}`);
+        else setStatusMessage('An unknown error occurred.');
+    }
   };
 
   const handlePushRiskParams = () => {
@@ -356,10 +378,13 @@ export function RiskRateOracleAdapterAdmin() {
     try {
       const projectId = BigInt(pushParamsProjectId);
       const aprBps = parseInt(pushParamsAprBps, 10);
-      const tenor = BigInt(pushParamsTenor); // Can be 0 if unchanged
+      const tenor = BigInt(pushParamsTenor || "0");
       if (isNaN(aprBps) || aprBps < 0) { setStatusMessage('APR BPS must be a non-negative number.'); return; }
       handleWrite('pushRiskParams', [projectId, aprBps, tenor], `Pushing params for Project ${projectId}: APR ${aprBps}bps, Tenor ${tenor}...`);
-    } catch (e: any) { setStatusMessage(`Error: ${e.message}`); }
+    } catch (e: unknown) { 
+        if (e instanceof Error) setStatusMessage(`Error: ${e.message}`);
+        else setStatusMessage('An unknown error occurred.');
+    }
   };
 
   const handleTriggerBatchAssessment = () => {
@@ -371,7 +396,10 @@ export function RiskRateOracleAdapterAdmin() {
     try {
       const projectId = BigInt(requestAssessmentProjectId);
       handleWrite('requestPeriodicAssessment', [projectId], `Requesting periodic assessment for Project ${projectId}...`);
-    } catch (e: any) { setStatusMessage(`Error: ${e.message}`); }
+    } catch (e: unknown) { 
+        if (e instanceof Error) setStatusMessage(`Error: ${e.message}`);
+        else setStatusMessage('An unknown error occurred.');
+    }
   };
 
   const handleViewOracleConfig = () => {
@@ -573,14 +601,34 @@ export function RiskRateOracleAdapterAdmin() {
         <div className="p-4 border rounded bg-gray-50 mt-6">
           <h3 className="text-xl font-medium text-black mb-3">Recent Oracle Events</h3>
           <ul className="space-y-3">
-            {oracleEvents.slice(-5).reverse().map((event: any, index) => (
+            {oracleEvents.slice(-5).reverse().map((event, index) => (
               <li key={`oracle-${index}`} className="p-3 bg-blue-50 border-blue-200 rounded shadow-sm">
-                <p className="text-sm text-black"><strong>Event: {event.eventName || 'Unknown Oracle Event'}</strong></p>
-                {event.projectId && <p className="text-black">Project ID: {event.projectId.toString()}</p>}
-                {event.riskLevel && <p className="text-black">Risk Level: {event.riskLevel.toString()}</p>}
-                {event.aprBps && <p className="text-black">APR BPS: {event.aprBps.toString()}</p>}
-                {event.tenor && <p className="text-black">Tenor: {event.tenor.toString()}</p>}
-                {event.newInterval && <p className="text-black">New Interval: {event.newInterval.toString()}</p>}
+                <p className="text-sm text-black"><strong>Event: {event.eventName}</strong></p>
+                {event.eventName === 'ProjectRiskLevelSet' && (
+                    <>
+                        <p className="text-black">Project ID: {event.projectId.toString()}</p>
+                        <p className="text-black">Risk Level: {event.riskLevel.toString()}</p>
+                    </>
+                )}
+                {event.eventName === 'RiskParamsPushed' && (
+                    <>
+                        <p className="text-black">Project ID: {event.projectId.toString()}</p>
+                        <p className="text-black">APR BPS: {event.aprBps.toString()}</p>
+                        <p className="text-black">Tenor: {event.tenor.toString()}</p>
+                    </>
+                )}
+                {event.eventName === 'PeriodicAssessmentRequested' && (
+                    <>
+                        <p className="text-black">Project ID: {event.projectId.toString()}</p>
+                        <p className="text-black">Last Assessment: {new Date(Number(event.lastAssessmentTimestamp) * 1000).toLocaleString()}</p>
+                    </>
+                )}
+                {event.eventName === 'AssessmentIntervalUpdated' && (
+                     <>
+                        <p className="text-black">New Interval: {event.newInterval.toString()}</p>
+                        <p className="text-black">Old Interval: {event.oldInterval.toString()}</p>
+                    </>
+                )}
               </li>
             ))}
           </ul>

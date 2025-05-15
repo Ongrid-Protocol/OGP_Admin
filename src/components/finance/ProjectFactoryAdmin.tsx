@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
 import { Address, Abi, decodeEventLog, Hex, keccak256, toHex } from 'viem';
 import projectFactoryAbiJson from '@/abis/ProjectFactory.json';
@@ -54,7 +54,7 @@ const createRoleHashMap = (roleNames: string[]): { [hash: Hex]: string } => {
 };
 
 export function ProjectFactoryAdmin() {
-  const { address: connectedAddress } = useAccount();
+  const {} = useAccount(); // connectedAddress removed
   const { data: writeHash, writeContract, isPending: isWritePending, error: writeError } = useWriteContract();
   const { isLoading: isConfirming, isSuccess: isConfirmed, error: receiptError } = useWaitForTransactionReceipt({ hash: writeHash });
 
@@ -132,7 +132,14 @@ export function ProjectFactoryAdmin() {
       try {
         setSelectedRoleBytes32(keccak256(toHex(selectedRoleName)));
         setStatusMessage('');
-      } catch (e: any) { setSelectedRoleBytes32(null); setStatusMessage(`Error computing role hash: ${e.message}`); }
+      } catch (e: unknown) { 
+        setSelectedRoleBytes32(null); 
+        if (e instanceof Error) {
+            setStatusMessage(`Error computing role hash: ${e.message}`);
+        } else {
+            setStatusMessage('An unknown error occurred while computing role hash.');
+        }
+      }
     } else { setSelectedRoleBytes32(null); }
   }, [selectedRoleName]);
 
@@ -143,11 +150,15 @@ export function ProjectFactoryAdmin() {
         setHasRoleStatus('');
       } else {
         try {
-          setSelectedRoleBytes32(keccak256(toHex(checkRoleName)));
+          setCheckRoleBytes32(keccak256(toHex(checkRoleName)));
           setHasRoleStatus('');
-        } catch (e: any) { 
+        } catch (e: unknown) { 
           setCheckRoleBytes32(null); 
-          setHasRoleStatus(`Error computing role hash for check: ${e.message}`); 
+          if (e instanceof Error) {
+            setHasRoleStatus(`Error computing role hash for check: ${e.message}`); 
+          } else {
+            setHasRoleStatus('An unknown error occurred while computing role hash for check.');
+          }
         }
       }
     } else { setCheckRoleBytes32(null); }
@@ -163,7 +174,7 @@ export function ProjectFactoryAdmin() {
           const roleName = roleHashMap[args.role] || args.role; // Fallback to hash
           setRoleEvents(prev => [...prev, args]);
           setStatusMessage(`RoleGranted Event: Role ${roleName} (${args.role.substring(0,10)}...) granted to ${args.account}`);
-        } catch (e) { console.error("Error decoding RoleGranted:", e); setStatusMessage("Error processing RoleGranted event."); }
+        } catch (e: unknown) { console.error("Error decoding RoleGranted:", e); setStatusMessage("Error processing RoleGranted event."); }
       });
     },
     onError: (error) => { console.error('Error watching RoleGranted event:', error); setStatusMessage(`Error watching RoleGranted event: ${error.message}`);}
@@ -179,7 +190,7 @@ export function ProjectFactoryAdmin() {
           const roleName = roleHashMap[args.role] || args.role;
           setRoleEvents(prev => [...prev, args]);
           setStatusMessage(`RoleRevoked Event: Role ${roleName} (${args.role.substring(0,10)}...) revoked from ${args.account}`);
-        } catch (e) { console.error("Error decoding RoleRevoked:", e); setStatusMessage("Error processing RoleRevoked event."); }
+        } catch (e: unknown) { console.error("Error decoding RoleRevoked:", e); setStatusMessage("Error processing RoleRevoked event."); }
       });
     },
     onError: (error) => { console.error('Error watching RoleRevoked event:', error); setStatusMessage(`Error watching RoleRevoked event: ${error.message}`);}
@@ -191,9 +202,10 @@ export function ProjectFactoryAdmin() {
       logs.forEach(log => {
         try {
           const decoded = decodeEventLog({ abi: projectFactoryAbi, data: log.data, topics: log.topics, eventName: 'ProjectCreated' });
-          setProjectEvents(prev => [...prev, decoded.args as unknown as ProjectCreatedEventArgs]);
-          setStatusMessage(`Event: ProjectCreated ${ (decoded.args as any).projectId.substring(0,10)}...`);
-        } catch (e) { console.error("Error decoding ProjectCreated:", e); setStatusMessage("Error processing event."); }
+          const args = decoded.args as unknown as ProjectCreatedEventArgs;
+          setProjectEvents(prev => [...prev, args]);
+          setStatusMessage(`Event: ProjectCreated ${args.projectId.substring(0,10)}...`);
+        } catch (e: unknown) { console.error("Error decoding ProjectCreated:", e); setStatusMessage("Error processing event."); }
       });
     }
   });
@@ -204,9 +216,10 @@ export function ProjectFactoryAdmin() {
       logs.forEach(log => {
         try {
           const decoded = decodeEventLog({ abi: projectFactoryAbi, data: log.data, topics: log.topics, eventName: 'AddressesSet' });
-          setAddressesSetEvents(prev => [...prev, decoded.args as unknown as AddressesSetEventArgs]);
-          setStatusMessage(`Event: AddressesSet - LiquidityPoolManager: ${(decoded.args as any).liquidityPoolManager?.substring(0,10)}...`);
-        } catch (e) { console.error("Error decoding AddressesSet:", e); setStatusMessage("Error processing AddressesSet event."); }
+          const args = decoded.args as unknown as AddressesSetEventArgs;
+          setAddressesSetEvents(prev => [...prev, args]);
+          setStatusMessage(`Event: AddressesSet - LiquidityPoolManager: ${args.liquidityPoolManager?.substring(0,10)}...`);
+        } catch (e: unknown) { console.error("Error decoding AddressesSet:", e); setStatusMessage("Error processing AddressesSet event."); }
       });
     }
   });
@@ -222,9 +235,13 @@ export function ProjectFactoryAdmin() {
     }
   }, [hasRoleData, hasRoleError]);
 
-  const refetchAll = () => { refetchPaused(); refetchDevReg(); refetchProtoTreasury(); };
+  const refetchAll = useCallback(() => { 
+    refetchPaused(); 
+    refetchDevReg(); 
+    refetchProtoTreasury(); 
+  }, [refetchPaused, refetchDevReg, refetchProtoTreasury]);
 
-  const handleWrite = (functionName: string, args: any[], successMsg?: string) => {
+  const handleWrite = (functionName: string, args: unknown[], successMsg?: string) => {
     if (!PROJECT_FACTORY_ADDRESS) { setStatusMessage('Contract address not set'); return; }
     setStatusMessage('');
     writeContract({ address: PROJECT_FACTORY_ADDRESS, abi: projectFactoryAbi, functionName, args },
@@ -280,8 +297,12 @@ export function ProjectFactoryAdmin() {
             saProtocolTreasury as Address
         ];
         handleWrite('setAddresses', args, 'Setting all core addresses via setAddresses...');
-    } catch (e: any) {
-        setStatusMessage(`Error preparing setAddresses transaction: ${e.message}`);
+    } catch (e: unknown) {
+        if (e instanceof Error) {
+            setStatusMessage(`Error preparing setAddresses transaction: ${e.message}`);
+        } else {
+            setStatusMessage('An unknown error occurred while preparing setAddresses transaction.');
+        }
     }
   };
 

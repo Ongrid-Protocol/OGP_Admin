@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
 import { Address, Abi, decodeEventLog, Hex, keccak256, toHex } from 'viem';
 import repaymentRouterAbiJson from '@/abis/RepaymentRouter.json';
@@ -37,7 +37,7 @@ const createRoleHashMap = (roleNames: string[]): { [hash: Hex]: string } => {
 };
 
 export function RepaymentRouterAdmin() {
-  const { address: connectedAddress } = useAccount();
+  const {} = useAccount();
   const { data: writeHash, writeContract, isPending: isWritePending, error: writeError } = useWriteContract();
   const { isLoading: isConfirming, isSuccess: isConfirmed, error: receiptError } = useWaitForTransactionReceipt({ hash: writeHash });
 
@@ -101,7 +101,14 @@ export function RepaymentRouterAdmin() {
       try {
         setSelectedRoleBytes32(keccak256(toHex(selectedRoleName)));
         setStatusMessage('');
-      } catch (e: any) { setSelectedRoleBytes32(null); setStatusMessage(`Error computing role hash: ${e.message}`); }
+      } catch (e: unknown) { 
+        setSelectedRoleBytes32(null); 
+        if (e instanceof Error) {
+            setStatusMessage(`Error computing role hash: ${e.message}`);
+        } else {
+            setStatusMessage('An unknown error occurred while computing role hash.');
+        }
+      }
     } else { setSelectedRoleBytes32(null); }
   }, [selectedRoleName]);
 
@@ -114,9 +121,13 @@ export function RepaymentRouterAdmin() {
         try {
           setCheckRoleBytes32(keccak256(toHex(checkRoleName)));
           setHasRoleStatus('');
-        } catch (e: any) { 
+        } catch (e: unknown) { 
           setCheckRoleBytes32(null); 
-          setHasRoleStatus(`Error computing role hash for check: ${e.message}`); 
+          if (e instanceof Error) {
+            setHasRoleStatus(`Error computing role hash for check: ${e.message}`); 
+          } else {
+            setHasRoleStatus('An unknown error occurred while computing role hash for check.');
+          }
         }
       }
     } else { setCheckRoleBytes32(null); }
@@ -134,7 +145,7 @@ export function RepaymentRouterAdmin() {
           const roleName = roleHashMap[args.role] || args.role; // Fallback to hash
           setRoleEvents(prev => [...prev, args]);
           setStatusMessage(`RoleGranted Event: Role ${roleName} (${args.role.substring(0,10)}...) granted to ${args.account}`);
-        } catch (e) { console.error("Error decoding RoleGranted:", e); setStatusMessage("Error processing RoleGranted event."); }
+        } catch (e: unknown) { console.error("Error decoding RoleGranted:", e); setStatusMessage("Error processing RoleGranted event."); }
       });
     },
     onError: (error) => { console.error('Error watching RoleGranted event:', error); setStatusMessage(`Error watching RoleGranted event: ${error.message}`);}
@@ -152,15 +163,15 @@ export function RepaymentRouterAdmin() {
           const roleName = roleHashMap[args.role] || args.role;
           setRoleEvents(prev => [...prev, args]);
           setStatusMessage(`RoleRevoked Event: Role ${roleName} (${args.role.substring(0,10)}...) revoked from ${args.account}`);
-        } catch (e) { console.error("Error decoding RoleRevoked:", e); setStatusMessage("Error processing RoleRevoked event."); }
+        } catch (e: unknown) { console.error("Error decoding RoleRevoked:", e); setStatusMessage("Error processing RoleRevoked event."); }
       });
     },
     onError: (error) => { console.error('Error watching RoleRevoked event:', error); setStatusMessage(`Error watching RoleRevoked event: ${error.message}`);}
   });
 
-  const refetchAll = () => { refetchPaused(); /* also refetch other data */ };
+  const refetchAll = useCallback(() => { refetchPaused(); /* also refetch other data */ }, [refetchPaused]);
 
-  const handleWrite = (functionName: string, args: any[], successMsg?: string) => {
+  const handleWrite = (functionName: string, args: unknown[], successMsg?: string) => {
     if (!REPAYMENT_ROUTER_ADDRESS) { setStatusMessage('Contract address not set'); return; }
     setStatusMessage('');
     writeContract({ address: REPAYMENT_ROUTER_ADDRESS, abi: repaymentRouterAbi, functionName, args },

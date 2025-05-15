@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
 import { Address, Abi, decodeEventLog, Hex, keccak256, toHex } from 'viem';
 import feeRouterAbiJson from '@/abis/FeeRouter.json';
@@ -49,7 +49,7 @@ const createRoleHashMap = (roleNames: string[]): { [hash: Hex]: string } => {
 };
 
 export function FeeRouterAdmin() {
-  const { address: connectedAddress } = useAccount();
+  const {} = useAccount();
   const { data: writeHash, writeContract, isPending: isWritePending, error: writeError } = useWriteContract();
   const { isLoading: isConfirming, isSuccess: isConfirmed, error: receiptError } = useWaitForTransactionReceipt({ hash: writeHash });
 
@@ -67,7 +67,7 @@ export function FeeRouterAdmin() {
   const [grantRoleToAddress, setGrantRoleToAddress] = useState<string>('');
   const [revokeRoleFromAddress, setRevokeRoleFromAddress] = useState<string>('');
   const [roleEvents, setRoleEvents] = useState<(RoleGrantedEventArgs | RoleRevokedEventArgs)[]>([]);
-  const [treasuryEvents, setTreasuryEvents] = useState<(ProtocolTreasurySetEventArgs | CarbonTreasurySetEventArgs)[]>([]);
+  const [treasuryEvents, setTreasuryEvents] = useState<(ProtocolTreasurySetEventArgs & { eventName: 'ProtocolTreasurySet' } | CarbonTreasurySetEventArgs & { eventName: 'CarbonTreasurySet' })[]>([]);
   const [feeRoutedEvents, setFeeRoutedEvents] = useState<FeeRoutedEventArgs[]>([]);
   const [roleHashMap, setRoleHashMap] = useState<{ [hash: Hex]: string }>({});
   const [statusMessage, setStatusMessage] = useState<string>('');
@@ -81,8 +81,21 @@ export function FeeRouterAdmin() {
 
   // State for Viewing Fee Details
   const [viewFeeProjectId, setViewFeeProjectId] = useState<string>('');
-  const [projectFeeDetails, setProjectFeeDetails] = useState<any | null>(null);
-  const [nextPaymentInfo, setNextPaymentInfo] = useState<any | null>(null);
+  const [projectFeeDetails, setProjectFeeDetails] = useState<{
+    creationTime: bigint;
+    lastMgmtFeeTimestamp: bigint;
+    loanAmount: bigint;
+    developer: Address;
+    repaymentSchedule?: { 
+        scheduleType: number; // Assuming 0: None, 1: Weekly, 2: Monthly from context
+        nextPaymentDue: bigint;
+        paymentAmount: bigint;
+    }
+  } | null>(null);
+  const [nextPaymentInfo, setNextPaymentInfo] = useState<{
+    dueDate: bigint;
+    amount: bigint;
+  } | null>(null);
 
   // --- Read Hooks ---
   const { data: pausedData, refetch: refetchPaused } = useReadContract({
@@ -150,10 +163,14 @@ export function FeeRouterAdmin() {
         const roleHash = keccak256(roleHex);
         setSelectedRoleBytes32(roleHash);
         setStatusMessage('');
-      } catch (e: any) {
+      } catch (e: unknown) {
         console.error("Error computing role hash:", e);
         setSelectedRoleBytes32(null);
-        setStatusMessage(`Error computing role hash: ${e.message}`);
+        if (e instanceof Error) {
+            setStatusMessage(`Error computing role hash: ${e.message}`);
+        } else {
+            setStatusMessage('An unknown error occurred while computing role hash.');
+        }
       }
     } else {
       setSelectedRoleBytes32(null);
@@ -171,10 +188,14 @@ export function FeeRouterAdmin() {
           const roleHash = keccak256(roleHex);
           setCheckRoleBytes32(roleHash);
           setHasRoleStatus('');
-        } catch (e: any) {
+        } catch (e: unknown) {
           console.error("Error computing check role hash:", e);
           setCheckRoleBytes32(null);
-          setHasRoleStatus(`Error computing role hash for check: ${e.message}`);
+          if (e instanceof Error) {
+            setHasRoleStatus(`Error computing role hash for check: ${e.message}`);
+          } else {
+            setHasRoleStatus('An unknown error occurred while computing check role hash.');
+          }
         }
       }
     } else {
@@ -206,7 +227,7 @@ export function FeeRouterAdmin() {
           const roleName = roleHashMap[args.role] || args.role; // Fallback to hash
           setRoleEvents(prevEvents => [...prevEvents, args]);
           setStatusMessage(`RoleGranted event: Role ${roleName} (${args.role.substring(0,10)}...) granted to ${args.account} by ${args.sender}`);
-        } catch (e) { console.error("Error decoding RoleGranted event:", e); setStatusMessage("Error processing RoleGranted event."); }
+        } catch (e: unknown) { console.error("Error decoding RoleGranted event:", e); setStatusMessage("Error processing RoleGranted event."); }
       });
     },
     onError(error) { console.error('Error watching RoleGranted event:', error); setStatusMessage(`Error watching RoleGranted event: ${error.message}`); }
@@ -221,10 +242,10 @@ export function FeeRouterAdmin() {
         try {
           const decoded = decodeEventLog({ abi: feeRouterAbi, data: log.data, topics: log.topics, eventName: 'ProtocolTreasurySet' });
           const args = decoded.args as unknown as ProtocolTreasurySetEventArgs;
-          setTreasuryEvents(prevEvents => [...prevEvents, args]);
+          setTreasuryEvents(prevEvents => [...prevEvents, { ...args, eventName: 'ProtocolTreasurySet' as const }]);
           setStatusMessage(`ProtocolTreasurySet event: New: ${args.newTreasury}, Old: ${args.oldTreasury}`);
           refetchProtocolTreasury(); // Refetch to update display
-        } catch (e) { console.error("Error decoding ProtocolTreasurySet event:", e); setStatusMessage("Error processing ProtocolTreasurySet event."); }
+        } catch (e: unknown) { console.error("Error decoding ProtocolTreasurySet event:", e); setStatusMessage("Error processing ProtocolTreasurySet event."); }
       });
     },
     onError(error) { console.error('Error watching ProtocolTreasurySet event:', error); setStatusMessage(`Error watching ProtocolTreasurySet event: ${error.message}`); }
@@ -239,10 +260,10 @@ export function FeeRouterAdmin() {
         try {
           const decoded = decodeEventLog({ abi: feeRouterAbi, data: log.data, topics: log.topics, eventName: 'CarbonTreasurySet' });
           const args = decoded.args as unknown as CarbonTreasurySetEventArgs;
-          setTreasuryEvents(prevEvents => [...prevEvents, args]);
+          setTreasuryEvents(prevEvents => [...prevEvents, { ...args, eventName: 'CarbonTreasurySet' as const }]);
           setStatusMessage(`CarbonTreasurySet event: New: ${args.newTreasury}, Old: ${args.oldTreasury}`);
           refetchCarbonTreasury(); // Refetch to update display
-        } catch (e) { console.error("Error decoding CarbonTreasurySet event:", e); setStatusMessage("Error processing CarbonTreasurySet event."); }
+        } catch (e: unknown) { console.error("Error decoding CarbonTreasurySet event:", e); setStatusMessage("Error processing CarbonTreasurySet event."); }
       });
     },
     onError(error) { console.error('Error watching CarbonTreasurySet event:', error); setStatusMessage(`Error watching CarbonTreasurySet event: ${error.message}`); }
@@ -260,7 +281,7 @@ export function FeeRouterAdmin() {
           const roleName = roleHashMap[args.role] || args.role;
           setRoleEvents(prevEvents => [...prevEvents, args]);
           setStatusMessage(`RoleRevoked event: Role ${roleName} (${args.role.substring(0,10)}...) revoked from ${args.account} by ${args.sender}`);
-        } catch (e) { console.error("Error decoding RoleRevoked event:", e); setStatusMessage("Error processing RoleRevoked event."); }
+        } catch (e: unknown) { console.error("Error decoding RoleRevoked event:", e); setStatusMessage("Error processing RoleRevoked event."); }
       });
     },
     onError(error) { console.error('Error watching RoleRevoked event:', error); setStatusMessage(`Error watching RoleRevoked event: ${error.message}`); }
@@ -277,13 +298,13 @@ export function FeeRouterAdmin() {
           const args = decoded.args as unknown as FeeRoutedEventArgs;
           setFeeRoutedEvents(prevEvents => [...prevEvents, args]);
           setStatusMessage(`FeeRouted event: Total ${args.totalFeeAmount.toString()}, Protocol ${args.protocolTreasuryAmount.toString()}, Carbon ${args.carbonTreasuryAmount.toString()}`);
-        } catch (e) { console.error("Error decoding FeeRouted event:", e); setStatusMessage("Error processing FeeRouted event."); }
+        } catch (e: unknown) { console.error("Error decoding FeeRouted event:", e); setStatusMessage("Error processing FeeRouted event."); }
       });
     },
     onError(error) { console.error('Error watching FeeRouted event:', error); setStatusMessage(`Error watching FeeRouted event: ${error.message}`); }
   });
 
-  const refetchAll = () => {
+  const refetchAll = useCallback(() => {
     refetchPaused();
     refetchProtocolTreasury();
     refetchCarbonTreasury();
@@ -291,9 +312,9 @@ export function FeeRouterAdmin() {
       fetchProjectFeeDetails();
       fetchNextPaymentInfo();
     }
-  };
+  }, [refetchPaused, refetchProtocolTreasury, refetchCarbonTreasury, viewFeeProjectId, fetchProjectFeeDetails, fetchNextPaymentInfo]);
 
-  const handleWrite = (functionName: string, args: any[], successMessage?: string) => {
+  const handleWrite = (functionName: string, args: unknown[], successMessage?: string) => {
     if (!FEE_ROUTER_ADDRESS) { setStatusMessage('Fee Router contract address not set'); return; }
     setStatusMessage('');
     writeContract({
@@ -312,7 +333,10 @@ export function FeeRouterAdmin() {
     if (!grantRoleToAddress) { setStatusMessage('Please enter address to grant role.'); return; }
     try {
       handleWrite('grantRole', [selectedRoleBytes32, grantRoleToAddress as Address], `Granting ${selectedRoleName} to ${grantRoleToAddress}...`);
-    } catch (e: any) { setStatusMessage(`Error preparing grantRole: ${e.message}`); }
+    } catch (e: unknown) { 
+        if (e instanceof Error) setStatusMessage(`Error preparing grantRole: ${e.message}`);
+        else setStatusMessage('An unknown error occurred while preparing grantRole.');
+    }
   };
 
   const handleRevokeRole = () => {
@@ -320,7 +344,10 @@ export function FeeRouterAdmin() {
     if (!revokeRoleFromAddress) { setStatusMessage('Please enter address to revoke role from.'); return; }
     try {
       handleWrite('revokeRole', [selectedRoleBytes32, revokeRoleFromAddress as Address], `Revoking ${selectedRoleName} from ${revokeRoleFromAddress}...`);
-    } catch (e: any) { setStatusMessage(`Error preparing revokeRole: ${e.message}`); }
+    } catch (e: unknown) { 
+        if (e instanceof Error) setStatusMessage(`Error preparing revokeRole: ${e.message}`);
+        else setStatusMessage('An unknown error occurred while preparing revokeRole.');
+    }
   };
 
   const handleCheckHasRole = () => {
@@ -343,14 +370,20 @@ export function FeeRouterAdmin() {
     if (!newProtocolTreasury) { setStatusMessage('Please enter new Protocol Treasury address.'); return; }
     try {
       handleWrite('setProtocolTreasury', [newProtocolTreasury as Address], `Setting Protocol Treasury to ${newProtocolTreasury}...`);
-    } catch (e: any) { setStatusMessage(`Error: ${e.message}`); }
+    } catch (e: unknown) { 
+        if (e instanceof Error) setStatusMessage(`Error: ${e.message}`);
+        else setStatusMessage('An unknown error occurred.');
+    }
   };
 
   const handleSetCarbonTreasury = () => {
     if (!newCarbonTreasury) { setStatusMessage('Please enter new Carbon Treasury address.'); return; }
     try {
       handleWrite('setCarbonTreasury', [newCarbonTreasury as Address], `Setting Carbon Treasury to ${newCarbonTreasury}...`);
-    } catch (e: any) { setStatusMessage(`Error: ${e.message}`); }
+    } catch (e: unknown) { 
+        if (e instanceof Error) setStatusMessage(`Error: ${e.message}`);
+        else setStatusMessage('An unknown error occurred.');
+    }
   };
 
   const handlePause = () => handleWrite('pause', [], 'Pause transaction submitted...');
@@ -378,11 +411,11 @@ export function FeeRouterAdmin() {
 
   // Effect for View Fee Details Data
   useEffect(() => {
-    if (projectFeeDetailsData) setProjectFeeDetails(projectFeeDetailsData);
+    if (projectFeeDetailsData) setProjectFeeDetails(projectFeeDetailsData as typeof projectFeeDetails);
   }, [projectFeeDetailsData]);
 
   useEffect(() => {
-    if (nextPaymentInfoData) setNextPaymentInfo(nextPaymentInfoData);
+    if (nextPaymentInfoData) setNextPaymentInfo(nextPaymentInfoData as typeof nextPaymentInfo);
   }, [nextPaymentInfoData]);
 
   if (!FEE_ROUTER_ADDRESS) {
@@ -581,19 +614,14 @@ export function FeeRouterAdmin() {
           <div>
             <h4 className="text-lg font-medium text-black mb-2">Treasury Update Events:</h4>
             <ul className="space-y-3">
-              {treasuryEvents.slice(-3).reverse().map((event, index) => { // Display last 3, newest first
-                const isProtocolTreasury = 'newTreasury' in event && 'oldTreasury' in event && Object.keys(event).length === 2; // Basic check
+              {treasuryEvents.slice(-3).reverse().map((event, index) => { 
                 return (
                   <li key={`treasury-${index}`} className="p-3 bg-white border border-gray-200 rounded shadow-sm">
-                    {isProtocolTreasury ? (
                       <>
-                        <p className="text-sm text-black"><strong>Event:</strong> {(event as ProtocolTreasurySetEventArgs).newTreasury ? 'ProtocolTreasurySet' : 'CarbonTreasurySet'}</p>
-                        <p className="text-sm text-black"><strong>New Treasury:</strong> {(event as ProtocolTreasurySetEventArgs).newTreasury}</p>
-                        <p className="text-sm text-black"><strong>Old Treasury:</strong> {(event as ProtocolTreasurySetEventArgs).oldTreasury}</p>
+                        <p className="text-sm text-black"><strong>Event:</strong> {event.eventName}</p>
+                        <p className="text-sm text-black"><strong>New Treasury:</strong> {event.newTreasury}</p>
+                        <p className="text-sm text-black"><strong>Old Treasury:</strong> {event.oldTreasury}</p>
                       </>
-                    ) : (
-                      <p className="text-sm text-black">Unknown treasury event format.</p>
-                    )}
                   </li>
                 );
               })}

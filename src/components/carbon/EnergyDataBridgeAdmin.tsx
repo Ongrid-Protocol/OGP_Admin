@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract } from 'wagmi';
-import { parseUnits, formatUnits, Address, Abi, toBytes } from 'viem';
+import { Address, toBytes } from 'viem';
 import energyDataBridgeAbiJson from '@/abis/EnergyDataBridge.json';
 
 const ENERGY_DATA_BRIDGE_ADDRESS = process.env.NEXT_PUBLIC_ENERGY_DATA_BRIDGE_ADDRESS as Address | undefined;
@@ -12,6 +12,13 @@ const energyDataBridgeAbi = energyDataBridgeAbiJson.abi;
 interface RoleInfoEDB {
   name: string;
   hash: `0x${string}` | undefined;
+}
+
+interface RegisteredNodeInfo {
+  operator: Address;
+  peerId: `0x${string}`; // Assuming peerId is already in bytes32 hex format from contract
+  isActive: boolean;
+  // Add other fields if your contract returns more for registeredNodes
 }
 
 export function EnergyDataBridgeAdmin() {
@@ -59,7 +66,7 @@ export function EnergyDataBridgeAdmin() {
   const [updateNodePeerId, setUpdateNodePeerId] = useState<string>('');
   const [updateNodeIsActive, setUpdateNodeIsActive] = useState<boolean>(true);
   const [queryNodePeerId, setQueryNodePeerId] = useState<string>('');
-  const [queriedNodeInfo, setQueriedNodeInfo] = useState<any | null>(null); // To store fetched node details
+  const [queriedNodeInfo, setQueriedNodeInfo] = useState<RegisteredNodeInfo | null>(null); // To store fetched node details
   const [peerIdCount, setPeerIdCount] = useState<bigint | undefined>(undefined);
 
   // State for inputs
@@ -115,7 +122,7 @@ export function EnergyDataBridgeAdmin() {
   useEffect(() => { if (upgraderHashEDB) setUpgraderRoleEDB(upgraderHashEDB as `0x${string}`); }, [upgraderHashEDB]);
 
   useEffect(() => { if (peerIdCountData !== undefined) setPeerIdCount(peerIdCountData as bigint); }, [peerIdCountData]);
-  useEffect(() => { if (registeredNodeData) setQueriedNodeInfo(registeredNodeData); }, [registeredNodeData]);
+  useEffect(() => { if (registeredNodeData) setQueriedNodeInfo(registeredNodeData as unknown as RegisteredNodeInfo); }, [registeredNodeData]);
 
   const { data: hasRoleDataEDB, refetch: fetchHasRoleEDB, isLoading: isHasRoleLoadingEDB } = useReadContract({
     address: ENERGY_DATA_BRIDGE_ADDRESS,
@@ -143,7 +150,7 @@ export function EnergyDataBridgeAdmin() {
   }, [roleAdminDataEDB, availableRolesEDB]);
 
   // Refetch function
-  const refetchAll = () => {
+  const refetchAll = useCallback(() => {
     refetchCreditToken();
     refetchRewardDist();
     refetchEmissionFactor();
@@ -152,10 +159,10 @@ export function EnergyDataBridgeAdmin() {
     refetchPaused();
     refetchPeerIdCount();
     if (queryNodePeerId) fetchRegisteredNode();
-  };
+  }, [refetchCreditToken, refetchRewardDist, refetchEmissionFactor, refetchRequiredNodes, refetchProcessingDelay, refetchPaused, refetchPeerIdCount, queryNodePeerId, fetchRegisteredNode]);
 
   // --- Write Functions ---
-  const handleWrite = (functionName: string, args: any[], successMessage?: string) => {
+  const handleWrite = (functionName: string, args: unknown[], successMessage?: string) => {
     if (!ENERGY_DATA_BRIDGE_ADDRESS) { setStatusMessage('Contract address not set'); return; }
     setStatusMessage('');
     try {
@@ -168,20 +175,27 @@ export function EnergyDataBridgeAdmin() {
         onSuccess: () => setStatusMessage(successMessage || 'Transaction submitted...'),
         onError: (error) => setStatusMessage(`Submission Error: ${error.message}`),
       });
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`${functionName} error:`, e);
-      setStatusMessage(`Error calling ${functionName}: ${e.message}`);
+      if (e instanceof Error) {
+        setStatusMessage(`Error calling ${functionName}: ${e.message}`);
+      } else {
+        setStatusMessage(`An unknown error occurred calling ${functionName}`);
+      }
     }
   };
 
   const handleSetEmissionFactor = () => {
     if (!newEmissionFactor) { setStatusMessage('Please enter new emission factor.'); return; }
     try {
-        // Assuming emission factor is a direct uint256 value (e.g., grams CO2 per kWh * 1e6?) - Needs clarification on expected units/precision
       const factor = BigInt(newEmissionFactor); // Use BigInt for uint256
       handleWrite('setEmissionFactor', [factor], 'Set emission factor transaction submitted...');
-    } catch (e: any) {
-      setStatusMessage(`Invalid factor format: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid factor format: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while setting emission factor.');
+      }
     }
   };
 
@@ -190,20 +204,28 @@ export function EnergyDataBridgeAdmin() {
     try {
       const nodes = BigInt(newRequiredNodes);
       handleWrite('setRequiredConsensusNodes', [nodes], 'Set required nodes transaction submitted...');
-    } catch (e: any) {
-      setStatusMessage(`Invalid nodes format: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid nodes format: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while setting required nodes.');
+      }
     }
   };
 
   const handleSetProcessingDelay = () => {
-     if (!newProcessingDelay) { setStatusMessage('Please enter batch processing delay.'); return; }
-     try {
-       const delay = BigInt(newProcessingDelay); // Delay in seconds
-       handleWrite('setBatchProcessingDelay', [delay], 'Set processing delay transaction submitted...');
-     } catch (e: any) {
-       setStatusMessage(`Invalid delay format: ${e.message}`);
-     }
-   };
+    if (!newProcessingDelay) { setStatusMessage('Please enter batch processing delay.'); return; }
+    try {
+      const delay = BigInt(newProcessingDelay); // Delay in seconds
+      handleWrite('setBatchProcessingDelay', [delay], 'Set processing delay transaction submitted...');
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid delay format: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while setting processing delay.');
+      }
+    }
+  };
 
   const handlePause = () => handleWrite('pause', [], 'Pause transaction submitted...');
   const handleUnpause = () => handleWrite('unpause', [], 'Unpause transaction submitted...');
@@ -214,8 +236,12 @@ export function EnergyDataBridgeAdmin() {
     try {
       const accountAddress = grantRoleAccountEDB as Address;
       handleWrite('grantRole', [grantRoleSelectedEDB as `0x${string}`, accountAddress], `Granting ${availableRolesEDB.find(r=>r.hash === grantRoleSelectedEDB)?.name || grantRoleSelectedEDB} to ${accountAddress}...`);
-    } catch(e: any) {
-      setStatusMessage(`Invalid address for grant role: ${e.message}`);
+    } catch(e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid address for grant role: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while granting role.');
+      }
     }
   };
 
@@ -225,8 +251,12 @@ export function EnergyDataBridgeAdmin() {
     try {
       const accountAddress = revokeRoleAccountEDB as Address;
       handleWrite('revokeRole', [revokeRoleSelectedEDB as `0x${string}`, accountAddress], `Revoking ${availableRolesEDB.find(r=>r.hash === revokeRoleSelectedEDB)?.name || revokeRoleSelectedEDB} from ${accountAddress}...`);
-    } catch(e: any) {
-      setStatusMessage(`Invalid address for revoke role: ${e.message}`);
+    } catch(e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid address for revoke role: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while revoking role.');
+      }
     }
   };
 
@@ -252,12 +282,15 @@ export function EnergyDataBridgeAdmin() {
     if (!registerNodePeerId) { setStatusMessage('Please enter Peer ID.'); return; }
     if (!registerNodeOperator) { setStatusMessage('Please enter Operator address.'); return; }
     try {
-      // Assuming peerId is directly a bytes32 string. If not, conversion needed.
       const peerIdBytes32 = registerNodePeerId.startsWith('0x') ? registerNodePeerId as `0x${string}` : toBytes(registerNodePeerId, {size: 32});
       const operatorAddress = registerNodeOperator as Address;
       handleWrite('registerNode', [peerIdBytes32, operatorAddress], 'Register node transaction submitted...');
-    } catch (e: any) {
-      setStatusMessage(`Invalid input for register node: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid input for register node: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while registering node.');
+      }
     }
   };
 
@@ -266,8 +299,12 @@ export function EnergyDataBridgeAdmin() {
     try {
       const peerIdBytes32 = updateNodePeerId.startsWith('0x') ? updateNodePeerId as `0x${string}` : toBytes(updateNodePeerId, {size: 32});
       handleWrite('updateNodeStatus', [peerIdBytes32, updateNodeIsActive], 'Update node status transaction submitted...');
-    } catch (e: any) {
-      setStatusMessage(`Invalid input for update node status: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid input for update node status: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while updating node status.');
+      }
     }
   };
 

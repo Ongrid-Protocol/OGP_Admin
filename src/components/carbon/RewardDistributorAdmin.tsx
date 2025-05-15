@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract } from 'wagmi';
-import { parseUnits, formatUnits, Address, Abi } from 'viem';
+import { parseUnits, formatUnits, Address } from 'viem';
 import rewardDistributorAbiJson from '@/abis/RewardDistributor.json';
 import mockUsdcAbiJson from '@/abis/MockUSDC.json'; // Use MockUSDC ABI
 
@@ -67,8 +67,7 @@ export function RewardDistributorAdmin() {
   // State for inputs
   const [depositAmount, setDepositAmount] = useState<string>('');
   const [newRate, setNewRate] = useState<string>('');
-  const [checkNodeAddress, setCheckNodeAddress] = useState<string>('');
-  const [claimableAmount, setClaimableAmount] = useState<string | null>(null);
+  // claimableAmount and its setter removed as it was unused
 
   // Role Management Inputs
   const [grantRoleAccountRD, setGrantRoleAccountRD] = useState<string>('');
@@ -114,14 +113,14 @@ export function RewardDistributorAdmin() {
     query: { enabled: !!rewardTokenAddress && rewardTokenAddress !== '0x' && !!REWARD_DISTRIBUTOR_ADDRESS },
   });
 
-  // --- Read Hook for Claimable Rewards (on demand) ---
-  const { data: claimableData, refetch: fetchClaimable, isLoading: isClaimableLoading, error: claimableError } = useReadContract({
-    address: REWARD_DISTRIBUTOR_ADDRESS,
-    abi: rewardDistributorAbi,
-    functionName: 'claimableRewards',
-    args: checkNodeAddress ? [checkNodeAddress as Address] : undefined,
-    query: { enabled: false }, // Only fetch on demand
-  });
+  // --- Read Hook for Claimable Rewards (on demand) --- // Removed as it was unused
+  // const { data: claimableData, refetch: fetchClaimable, isLoading: isClaimableLoading, error: claimableError } = useReadContract({
+  //   address: REWARD_DISTRIBUTOR_ADDRESS,
+  //   abi: rewardDistributorAbi,
+  //   functionName: 'claimableRewards',
+  //   args: checkNodeAddress ? [checkNodeAddress as Address] : undefined,
+  //   query: { enabled: false }, // Only fetch on demand
+  // });
 
   // --- Effects to update state from reads ---
   useEffect(() => { if (rewardTokenAddrData) setRewardTokenAddress(rewardTokenAddrData as Address); }, [rewardTokenAddrData]);
@@ -132,7 +131,7 @@ export function RewardDistributorAdmin() {
   useEffect(() => { if (symbolData) setRewardTokenSymbol(symbolData as string); }, [symbolData]);
   useEffect(() => { if (decimalsData) setRewardTokenDecimals(Number(decimalsData)); }, [decimalsData]);
   useEffect(() => { if (balanceData !== undefined) setDistributorBalance(formatUnits(balanceData as bigint, rewardTokenDecimals)); }, [balanceData, rewardTokenDecimals]);
-  useEffect(() => { if (claimableData !== undefined) setClaimableAmount(formatUnits(claimableData as bigint, rewardTokenDecimals)); }, [claimableData, rewardTokenDecimals]);
+  // useEffect(() => { if (claimableData !== undefined) setClaimableAmount(formatUnits(claimableData as bigint, rewardTokenDecimals)); }, [claimableData, rewardTokenDecimals]); // Removed
 
   useEffect(() => { if (darHashRD) setDefaultAdminRoleRD(darHashRD as `0x${string}`); }, [darHashRD]);
   useEffect(() => { if (metricUpdaterHashRD) setMetricUpdaterRoleRD(metricUpdaterHashRD as `0x${string}`); }, [metricUpdaterHashRD]);
@@ -166,7 +165,7 @@ export function RewardDistributorAdmin() {
   }, [roleAdminDataRD, availableRolesRD]);
 
   // Refetch function
-  const refetchAll = () => {
+  const refetchAll = useCallback(() => {
     refetchRewardTokenAddr();
     refetchAccRewards();
     refetchRate();
@@ -174,10 +173,10 @@ export function RewardDistributorAdmin() {
     refetchPaused();
     refetchDistributorBalance();
     // Don't automatically refetch claimable, it's on demand
-  };
+  }, [refetchRewardTokenAddr, refetchAccRewards, refetchRate, refetchScore, refetchPaused, refetchDistributorBalance]);
 
   // --- Write Functions ---
-  const handleWrite = (functionName: string, args: any[], successMessage?: string) => {
+  const handleWrite = (functionName: string, args: unknown[], successMessage?: string) => {
     if (!REWARD_DISTRIBUTOR_ADDRESS) { setStatusMessage('Contract address not set'); return; }
     setStatusMessage('');
     try {
@@ -190,9 +189,13 @@ export function RewardDistributorAdmin() {
         onSuccess: () => setStatusMessage(successMessage || 'Transaction submitted...'),
         onError: (error) => setStatusMessage(`Submission Error: ${error.message}`),
       });
-    } catch (e: any) {
-      console.error(`${functionName} error:`, e);
-      setStatusMessage(`Error calling ${functionName}: ${e.message}`);
+    } catch (e: unknown) {
+      console.error(`${functionName} error:`, e); // Log the error regardless of its type
+      if (e instanceof Error) {
+        setStatusMessage(`Error calling ${functionName}: ${e.message}`);
+      } else {
+        setStatusMessage(`An unknown error occurred calling ${functionName}`);
+      }
     }
   };
 
@@ -204,8 +207,13 @@ export function RewardDistributorAdmin() {
       // For now, assume approval is done.
       setStatusMessage('Approval required before depositing. Proceeding assuming approval is done...')
       handleWrite('depositRewards', [amountWei], 'Deposit transaction submitted...');
-    } catch (e: any) {
-      setStatusMessage(`Invalid amount: ${e.message}`);
+    } catch (e: unknown) {
+      console.error('Deposit Rewards error:', e); // Specific logging for this catch
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid amount: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while depositing rewards.');
+      }
     }
   };
 
@@ -215,8 +223,13 @@ export function RewardDistributorAdmin() {
       // Assuming rate is in token wei per second per score unit
       const rateWei = parseUnits(newRate, rewardTokenDecimals);
       handleWrite('setRewardRate', [rateWei], 'Set rate transaction submitted...');
-    } catch (e: any) {
-      setStatusMessage(`Invalid rate format: ${e.message}`);
+    } catch (e: unknown) {
+      console.error('Set Reward Rate error:', e); // Specific logging
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid rate format: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while setting reward rate.');
+      }
     }
   };
 
@@ -229,8 +242,13 @@ export function RewardDistributorAdmin() {
     try {
       const accountAddress = grantRoleAccountRD as Address;
       handleWrite('grantRole', [grantRoleSelectedRD as `0x${string}`, accountAddress], `Granting ${availableRolesRD.find(r=>r.hash === grantRoleSelectedRD)?.name || grantRoleSelectedRD} to ${accountAddress}...`);
-    } catch(e: any) {
-      setStatusMessage(`Invalid address for grant role: ${e.message}`);
+    } catch(e: unknown) {
+      console.error('Grant Role error:', e); // Specific logging
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid address for grant role: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while granting role.');
+      }
     }
   };
 
@@ -240,8 +258,13 @@ export function RewardDistributorAdmin() {
     try {
       const accountAddress = revokeRoleAccountRD as Address;
       handleWrite('revokeRole', [revokeRoleSelectedRD as `0x${string}`, accountAddress], `Revoking ${availableRolesRD.find(r=>r.hash === revokeRoleSelectedRD)?.name || revokeRoleSelectedRD} from ${accountAddress}...`);
-    } catch(e: any) {
-      setStatusMessage(`Invalid address for revoke role: ${e.message}`);
+    } catch(e: unknown) {
+      console.error('Revoke Role error:', e); // Specific logging
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid address for revoke role: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while revoking role.');
+      }
     }
   };
 
@@ -272,19 +295,13 @@ export function RewardDistributorAdmin() {
       const delta = BigInt(updateNodeDelta);
       const timestamp = BigInt(updateNodeTimestamp);
       handleWrite('updateNodeContribution', [operatorAddress, delta, timestamp], 'Update node contribution transaction submitted...');
-    } catch (e: any) {
-      setStatusMessage(`Invalid input for node contribution: ${e.message}`);
-    }
-  };
-
-  // --- Claimable Handler ---
-  const handleFetchClaimable = () => {
-    if (!REWARD_DISTRIBUTOR_ADDRESS) { setClaimableAmount('Contract address not set'); return; }
-    if (checkNodeAddress) {
-      setClaimableAmount(null); // Clear previous
-      fetchClaimable();
-    } else {
-      setClaimableAmount("Please enter an address.");
+    } catch (e: unknown) {
+      console.error('Update Node Contribution error:', e); // Specific logging
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid input for node contribution: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while updating node contribution.');
+      }
     }
   };
 

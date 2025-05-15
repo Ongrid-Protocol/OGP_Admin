@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract } from 'wagmi';
-import { parseUnits, formatUnits, Address, Abi, zeroAddress, keccak256, toBytes } from 'viem';
+import { parseUnits, formatUnits, Address, zeroAddress } from 'viem';
 import carbonCreditTokenAbiJson from '@/abis/CarbonCreditToken.json';
 
 // Define contract address from .env
@@ -140,7 +140,7 @@ export function CarbonCreditTokenAdmin() {
 
 
   // --- Refetch All Data ---
-  const refetchAll = () => {
+  const refetchAll = useCallback(() => {
     refetchDecimals();
     refetchName();
     refetchSymbol();
@@ -149,10 +149,10 @@ export function CarbonCreditTokenAdmin() {
     refetchPausedStatus();
     // Role hashes are constants, no need to refetch them unless contract is upgraded with new roles.
     if (balanceAccountAddress) fetchBalance(); // Refetch balance if an address is set
-  };
+  }, [refetchDecimals, refetchName, refetchSymbol, refetchTotalSupply, refetchTreasury, refetchPausedStatus, balanceAccountAddress, fetchBalance]);
 
   // --- Write Functions ---
-  const handleWrite = (functionName: string, args: any[], successMessage?: string, specificStatusSetter?: React.Dispatch<React.SetStateAction<string>>) => {
+  const handleWrite = (functionName: string, args: unknown[], successMessage?: string, specificStatusSetter?: React.Dispatch<React.SetStateAction<string>>) => {
     const statusSetter = specificStatusSetter || setGeneralStatus;
     if (!CARBON_CREDIT_TOKEN_ADDRESS) { statusSetter('Contract address not set'); return; }
     statusSetter('');
@@ -166,9 +166,13 @@ export function CarbonCreditTokenAdmin() {
         onSuccess: () => statusSetter(successMessage || 'Transaction submitted...'),
         onError: (error) => statusSetter(`Submission Error: ${error.message}`),
       });
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`${functionName} error:`, e);
-      statusSetter(`Error calling ${functionName}: ${e.message}`);
+      if (e instanceof Error) {
+        statusSetter(`Error calling ${functionName}: ${e.message}`);
+      } else {
+        statusSetter(`An unknown error occurred calling ${functionName}`);
+      }
     }
   };
 
@@ -184,8 +188,12 @@ export function CarbonCreditTokenAdmin() {
     try {
       const accountAddress = grantRoleAccount as Address; // Basic validation, viem will do more
       handleWrite('grantRole', [grantRoleSelected as `0x${string}`, accountAddress], `Granting ${availableRoles.find(r=>r.hash === grantRoleSelected)?.name || grantRoleSelected} to ${accountAddress}...`);
-    } catch(e: any) {
-      setGeneralStatus(`Invalid address for grant role: ${e.message}`);
+    } catch(e: unknown) {
+      if (e instanceof Error) {
+        setGeneralStatus(`Invalid address for grant role: ${e.message}`);
+      } else {
+        setGeneralStatus('An unknown error occurred while granting role.');
+      }
     }
   };
 
@@ -195,8 +203,12 @@ export function CarbonCreditTokenAdmin() {
     try {
       const accountAddress = revokeRoleAccount as Address;
       handleWrite('revokeRole', [revokeRoleSelected as `0x${string}`, accountAddress], `Revoking ${availableRoles.find(r=>r.hash === revokeRoleSelected)?.name || revokeRoleSelected} from ${accountAddress}...`);
-    } catch(e: any) {
-      setGeneralStatus(`Invalid address for revoke role: ${e.message}`);
+    } catch(e: unknown) {
+      if (e instanceof Error) {
+        setGeneralStatus(`Invalid address for revoke role: ${e.message}`);
+      } else {
+        setGeneralStatus('An unknown error occurred while revoking role.');
+      }
     }
   };
 
@@ -219,8 +231,12 @@ export function CarbonCreditTokenAdmin() {
     try {
       const address = newTreasuryAddress as Address;
       handleWrite('setProtocolTreasury', [address], `Setting protocol treasury to ${address}...`);
-    } catch (e: any) {
-      setGeneralStatus(`Invalid address for new treasury: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setGeneralStatus(`Invalid address for new treasury: ${e.message}`);
+      } else {
+        setGeneralStatus('An unknown error occurred while setting protocol treasury.');
+      }
     }
   };
 
@@ -231,8 +247,12 @@ export function CarbonCreditTokenAdmin() {
       const toAddress = transferTreasuryTo as Address;
       const amountWei = parseUnits(transferTreasuryAmount, decimals);
       handleWrite('transferFromTreasury', [toAddress, amountWei], `Transferring ${transferTreasuryAmount} ${tokenSymbol} from treasury to ${toAddress}...`);
-    } catch (e: any) {
-      setGeneralStatus(`Invalid input for treasury transfer: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setGeneralStatus(`Invalid input for treasury transfer: ${e.message}`);
+      } else {
+        setGeneralStatus('An unknown error occurred during treasury transfer.');
+      }
     }
   };
 
@@ -242,8 +262,12 @@ export function CarbonCreditTokenAdmin() {
     try {
       const amountWei = parseUnits(retireTreasuryAmount, decimals);
       handleWrite('retireFromTreasury', [amountWei, retireTreasuryReason], `Retiring ${retireTreasuryAmount} ${tokenSymbol} from treasury. Reason: ${retireTreasuryReason}...`);
-    } catch (e: any) {
-      setGeneralStatus(`Invalid amount for treasury retirement: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setGeneralStatus(`Invalid amount for treasury retirement: ${e.message}`);
+      } else {
+        setGeneralStatus('An unknown error occurred during treasury retirement.');
+      }
     }
   };
 

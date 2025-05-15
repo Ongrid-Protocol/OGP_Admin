@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract } from 'wagmi';
-import { parseUnits, formatUnits, Address, Abi } from 'viem';
+import { parseUnits, formatUnits, Address } from 'viem';
 import carbonCreditExchangeAbiJson from '@/abis/CarbonCreditExchange.json';
 
 const CARBON_CREDIT_EXCHANGE_ADDRESS = process.env.NEXT_PUBLIC_CARBON_CREDIT_EXCHANGE_ADDRESS as Address | undefined;
@@ -141,7 +141,7 @@ export function CarbonCreditExchangeAdmin() {
   }, [roleAdminData, availableRoles]);
 
   // Refetch function
-  const refetchAll = () => {
+  const refetchAll = useCallback(() => {
     refetchCctAddr();
     refetchUsdcAddr();
     refetchRewardDistAddr();
@@ -150,12 +150,12 @@ export function CarbonCreditExchangeAdmin() {
     refetchProtoFee();
     refetchRewardFee();
     refetchPaused();
-  };
+  }, [refetchCctAddr, refetchUsdcAddr, refetchRewardDistAddr, refetchEnabled, refetchRate, refetchProtoFee, refetchRewardFee, refetchPaused]);
 
   // --- Write Functions ---
 
   // Generic handler for write functions
-  const handleWrite = (functionName: string, args: any[]) => {
+  const handleWrite = (functionName: string, args: unknown[]) => {
     if (!CARBON_CREDIT_EXCHANGE_ADDRESS) {
       setStatusMessage('Contract address not set in .env');
       return;
@@ -171,9 +171,13 @@ export function CarbonCreditExchangeAdmin() {
         onSuccess: () => setStatusMessage(`${functionName} transaction submitted...`),
         onError: (error) => setStatusMessage(`Submission Error (${functionName}): ${error.message}`),
       });
-    } catch (e: any) {
+    } catch (e: unknown) {
       console.error(`${functionName} error:`, e);
-      setStatusMessage(`Error calling ${functionName}: ${e.message}`);
+      if (e instanceof Error) {
+        setStatusMessage(`Error calling ${functionName}: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred calling ' + functionName);
+      }
     }
   };
 
@@ -198,8 +202,12 @@ export function CarbonCreditExchangeAdmin() {
       // rate stored = 0.1 * 10^6 = 100000 (USDC has 6 decimals)
       const rateInSmallestUnit = parseUnits(newRate, 6); // Assuming rate is USDC per CCT, and USDC has 6 decimals.
       handleWrite('setExchangeRate', [rateInSmallestUnit]);
-    } catch (e: any) {
-      setStatusMessage(`Invalid rate format: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid rate format: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while setting the exchange rate.');
+      }
     }
   };
 
@@ -209,8 +217,12 @@ export function CarbonCreditExchangeAdmin() {
       const feeBasisPoints = BigInt(Math.round(parseFloat(newProtocolFee) * 100)); // Convert % to basis points
       if (feeBasisPoints < 0 || feeBasisPoints > 10000) throw new Error('Fee must be between 0% and 100%');
       handleWrite('setProtocolFee', [feeBasisPoints]);
-    } catch (e: any) {
-      setStatusMessage(`Invalid fee format: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid fee format: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while setting the protocol fee.');
+      }
     }
   };
 
@@ -220,8 +232,12 @@ export function CarbonCreditExchangeAdmin() {
       const feeBasisPoints = BigInt(Math.round(parseFloat(newRewardFee) * 100)); // Convert % to basis points
       if (feeBasisPoints < 0 || feeBasisPoints > 10000) throw new Error('Fee must be between 0% and 100%');
       handleWrite('setRewardDistributorPercentage', [feeBasisPoints]);
-    } catch (e: any) {
-      setStatusMessage(`Invalid fee format: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid fee format: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while setting the reward fee.');
+      }
     }
   };
 
@@ -230,8 +246,12 @@ export function CarbonCreditExchangeAdmin() {
     try {
       const address = newUsdcTokenAddress as Address;
       handleWrite('setUSDCToken', [address]);
-    } catch (e: any) {
-      setStatusMessage(`Invalid address for USDC token: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid address for USDC token: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while setting the USDC token address.');
+      }
     }
   };
 
@@ -241,8 +261,12 @@ export function CarbonCreditExchangeAdmin() {
     try {
       const accountAddress = grantRoleAccount as Address;
       handleWrite('grantRole', [grantRoleSelected as `0x${string}`, accountAddress]);
-    } catch(e: any) {
-      setStatusMessage(`Invalid address for grant role: ${e.message}`);
+    } catch(e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid address for grant role: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while granting the role.');
+      }
     }
   };
 
@@ -252,8 +276,12 @@ export function CarbonCreditExchangeAdmin() {
     try {
       const accountAddress = revokeRoleAccount as Address;
       handleWrite('revokeRole', [revokeRoleSelected as `0x${string}`, accountAddress]);
-    } catch(e: any) {
-      setStatusMessage(`Invalid address for revoke role: ${e.message}`);
+    } catch(e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Invalid address for revoke role: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while revoking the role.');
+      }
     }
   };
 

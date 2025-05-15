@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
 import { Address, Abi, decodeEventLog, Hex, keccak256, toHex } from 'viem';
 import pausableGovernorAbiJson from '@/abis/PausableGovernor.json';
@@ -9,15 +9,15 @@ import constantsAbiJson from '@/abis/Constants.json';
 // Event Argument Types
 type RoleGrantedEventArgs = { role: Hex; account: Address; sender: Address; };
 type RoleRevokedEventArgs = { role: Hex; account: Address; sender: Address; };
-type PausedEventArgs = { account: Address; }; // PausableGovernor's Paused event often includes the target contract
-type UnpausedEventArgs = { account: Address; }; // PausableGovernor's Unpaused event
-type PausableContractAddedEventArgs = { target: Address; };
-type PausableContractRemovedEventArgs = { target: Address; };
+type PausedTargetEventArgs = { target: Address; caller: Address; }; // Adjusted based on typical PausableGovernor events
+type UnpausedTargetEventArgs = { target: Address; caller: Address; }; // Adjusted based on typical PausableGovernor events
+type PausableContractAddedEventArgs = { target: Address; caller: Address; }; // caller usually emits these
+type PausableContractRemovedEventArgs = { target: Address; caller: Address; };
 
 
 const PAUSABLE_GOVERNOR_ADDRESS = process.env.NEXT_PUBLIC_PAUSABLE_GOVERNOR_ADDRESS as Address | undefined;
 
-const pausableGovernorAbi = pausableGovernorAbiJson.abi;
+const pausableGovernorAbi = pausableGovernorAbiJson.abi as Abi;
 const constantsAbi = constantsAbiJson.abi as Abi;
 
 const getRoleNamesFromAbi = (abi: Abi): string[] => {
@@ -36,7 +36,7 @@ const createRoleHashMap = (roleNames: string[]): { [hash: Hex]: string } => {
 };
 
 export function PausableGovernorAdmin() {
-  const { address: connectedAddress } = useAccount();
+  const {} = useAccount();
   const { data: writeHash, writeContract, isPending: isWritePending, error: writeError } = useWriteContract();
   const { isLoading: isConfirming, isSuccess: isConfirmed, error: receiptError } = useWaitForTransactionReceipt({ hash: writeHash });
 
@@ -57,11 +57,16 @@ export function PausableGovernorAdmin() {
 
   // Governor Specific State
   const [targetContractAddress, setTargetContractAddress] = useState<string>('');
-  const [managedContracts, setManagedContracts] = useState<Address[]>([]); // For display, updated by events
+  const [managedContracts, setManagedContracts] = useState<Address[]>([]);
   const [roleEvents, setRoleEvents] = useState<(RoleGrantedEventArgs | RoleRevokedEventArgs)[]>([]);
-  const [governorEvents, setGovernorEvents] = useState<any[]>([]); // For Paused, Unpaused etc.
+  const [governorEvents, setGovernorEvents] = useState<(
+      (PausedTargetEventArgs & { eventName: 'Paused' }) |
+      (UnpausedTargetEventArgs & { eventName: 'Unpaused' }) |
+      (PausableContractAddedEventArgs & { eventName: 'PausableContractAdded' }) |
+      (PausableContractRemovedEventArgs & { eventName: 'PausableContractRemoved' })
+    )[]>([]);
 
-  // Read: isPausableContract (for verification, not a continuous display)
+  // Read: isPausableContract
   const { data: isPausableContractResult, refetch: checkIsPausable } = useReadContract({
     address: PAUSABLE_GOVERNOR_ADDRESS,
     abi: pausableGovernorAbi,
@@ -70,7 +75,7 @@ export function PausableGovernorAdmin() {
     query: { enabled: false }
   });
   
-  const { data: hasRoleData, refetch: fetchHasRole } = useReadContract({
+  const { data: hasRoleData, refetch: fetchHasRole, isLoading: isHasRoleLoading } = useReadContract({
     address: PAUSABLE_GOVERNOR_ADDRESS,
     abi: pausableGovernorAbi,
     functionName: 'hasRole',
@@ -88,7 +93,12 @@ export function PausableGovernorAdmin() {
     if (selectedRoleName) {
       try {
         setSelectedRoleBytes32(selectedRoleName === 'DEFAULT_ADMIN_ROLE' ? '0x0000000000000000000000000000000000000000000000000000000000000000' : keccak256(toHex(selectedRoleName)));
-      } catch (e) { console.error("Error computing role hash:", e); setSelectedRoleBytes32(null); }
+      } catch (e: unknown) { 
+        console.error("Error computing role hash:", e); 
+        setSelectedRoleBytes32(null);
+        if (e instanceof Error) setStatusMessage(`Error computing role hash: ${e.message}`);
+        else setStatusMessage('Unknown error computing role hash.');
+       }
     } else { setSelectedRoleBytes32(null); }
   }, [selectedRoleName]);
 
@@ -96,52 +106,117 @@ export function PausableGovernorAdmin() {
     if (checkRoleName) {
       try {
         setCheckRoleBytes32(checkRoleName === 'DEFAULT_ADMIN_ROLE' ? '0x0000000000000000000000000000000000000000000000000000000000000000' : keccak256(toHex(checkRoleName)));
-      } catch (e) { console.error("Error computing check role hash:", e); setCheckRoleBytes32(null); }
+      } catch (e: unknown) { 
+        console.error("Error computing check role hash:", e); 
+        setCheckRoleBytes32(null); 
+        if (e instanceof Error) setStatusMessage(`Error computing check role hash: ${e.message}`);
+        else setStatusMessage('Unknown error computing check role hash.');
+      }
     } else { setCheckRoleBytes32(null); }
   }, [checkRoleName]);
   
   useEffect(() => { if (hasRoleData !== undefined) setHasRoleResult(hasRoleData as boolean); }, [hasRoleData]);
 
   // Event Watchers
-  ['RoleGranted', 'RoleRevoked'].forEach(eventName => {
-    useWatchContractEvent({
-        address: PAUSABLE_GOVERNOR_ADDRESS,
-        abi: pausableGovernorAbi,
-        eventName: eventName as any,
-        onLogs(logs: any) {
-            logs.forEach((log: any) => {
-                const args = log.args as RoleGrantedEventArgs | RoleRevokedEventArgs;
+  useWatchContractEvent({
+      address: PAUSABLE_GOVERNOR_ADDRESS,
+      abi: pausableGovernorAbi,
+      eventName: 'RoleGranted',
+      onLogs(logs) {
+          logs.forEach(log => {
+              try {
+                const decoded = decodeEventLog({ abi: pausableGovernorAbi, data: log.data, topics: log.topics, eventName: 'RoleGranted'});
+                const args = decoded.args as unknown as RoleGrantedEventArgs;
                 const roleName = roleHashMap[args.role] || args.role;
                 setRoleEvents(prev => [...prev, args]);
-                setStatusMessage(`${eventName} Event: Role ${roleName} ${eventName === 'RoleGranted' ? 'granted to' : 'revoked from'} ${args.account}`);
-            });
-        }
-    });
+                setStatusMessage(`RoleGranted Event: Role ${roleName} granted to ${args.account}`);
+              } catch(e: unknown) { console.error("Error decoding RoleGranted:", e); }
+          });
+      }
   });
-
-  ['Paused', 'Unpaused', 'PausableContractAdded', 'PausableContractRemoved'].forEach(eventName => {
+  useWatchContractEvent({
+      address: PAUSABLE_GOVERNOR_ADDRESS,
+      abi: pausableGovernorAbi,
+      eventName: 'RoleRevoked',
+      onLogs(logs) {
+          logs.forEach(log => {
+            try {
+                const decoded = decodeEventLog({ abi: pausableGovernorAbi, data: log.data, topics: log.topics, eventName: 'RoleRevoked'});
+                const args = decoded.args as unknown as RoleRevokedEventArgs;
+                const roleName = roleHashMap[args.role] || args.role;
+                setRoleEvents(prev => [...prev, args]);
+                setStatusMessage(`RoleRevoked Event: Role ${roleName} revoked from ${args.account}`);
+            } catch(e: unknown) { console.error("Error decoding RoleRevoked:", e); }
+          });
+      }
+  });
+  useWatchContractEvent({
+      address: PAUSABLE_GOVERNOR_ADDRESS,
+      abi: pausableGovernorAbi,
+      eventName: 'Paused', // This is likely the event name for pausing a specific target
+      onLogs(logs) {
+          logs.forEach(log => {
+            try {
+                const decoded = decodeEventLog({ abi: pausableGovernorAbi, data: log.data, topics: log.topics, eventName: 'Paused'});
+                const args = decoded.args as unknown as PausedTargetEventArgs; 
+                setGovernorEvents(prev => [...prev, { ...args, eventName: 'Paused' as const}]);
+                setStatusMessage(`Paused Event: Target ${args.target} by ${args.caller}`);
+            } catch(e: unknown) { console.error("Error decoding Paused event:", e); }
+          });
+      }
+  });
     useWatchContractEvent({
-        address: PAUSABLE_GOVERNOR_ADDRESS,
-        abi: pausableGovernorAbi,
-        eventName: eventName as any,
-        onLogs(logs: any) {
-            logs.forEach((log: any) => {
-                setGovernorEvents(prev => [...prev, { eventName, args: log.args }]);
-                setStatusMessage(`${eventName} Event: ${JSON.stringify(log.args)}`);
-                // Update managedContracts list if Added/Removed
-                if (eventName === 'PausableContractAdded') {
-                    setManagedContracts(prev => [...prev, (log.args as PausableContractAddedEventArgs).target]);
-                } else if (eventName === 'PausableContractRemoved') {
-                    setManagedContracts(prev => prev.filter(addr => addr !== (log.args as PausableContractRemovedEventArgs).target));
-                }
-            });
-        }
-    });
+      address: PAUSABLE_GOVERNOR_ADDRESS,
+      abi: pausableGovernorAbi,
+      eventName: 'Unpaused', // This is likely the event name for unpausing a specific target
+      onLogs(logs) {
+          logs.forEach(log => {
+            try {
+                const decoded = decodeEventLog({ abi: pausableGovernorAbi, data: log.data, topics: log.topics, eventName: 'Unpaused'});
+                const args = decoded.args as unknown as UnpausedTargetEventArgs; 
+                setGovernorEvents(prev => [...prev, { ...args, eventName: 'Unpaused' as const}]);
+                setStatusMessage(`Unpaused Event: Target ${args.target} by ${args.caller}`);
+            } catch(e: unknown) { console.error("Error decoding Unpaused event:", e); }
+          });
+      }
+  });
+  useWatchContractEvent({
+      address: PAUSABLE_GOVERNOR_ADDRESS,
+      abi: pausableGovernorAbi,
+      eventName: 'PausableContractAdded',
+      onLogs(logs) {
+          logs.forEach(log => {
+            try {
+                const decoded = decodeEventLog({ abi: pausableGovernorAbi, data: log.data, topics: log.topics, eventName: 'PausableContractAdded'});
+                const args = decoded.args as unknown as PausableContractAddedEventArgs;
+                setGovernorEvents(prev => [...prev, { ...args, eventName: 'PausableContractAdded' as const}]);
+                setStatusMessage(`PausableContractAdded Event: Target ${args.target} by ${args.caller}`);
+                setManagedContracts(prev => [...prev, args.target]);
+            } catch(e: unknown) { console.error("Error decoding PausableContractAdded event:", e); }
+          });
+      }
+  });
+  useWatchContractEvent({
+      address: PAUSABLE_GOVERNOR_ADDRESS,
+      abi: pausableGovernorAbi,
+      eventName: 'PausableContractRemoved',
+      onLogs(logs) {
+          logs.forEach(log => {
+            try {
+                const decoded = decodeEventLog({ abi: pausableGovernorAbi, data: log.data, topics: log.topics, eventName: 'PausableContractRemoved'});
+                const args = decoded.args as unknown as PausableContractRemovedEventArgs;
+                setGovernorEvents(prev => [...prev, { ...args, eventName: 'PausableContractRemoved' as const}]);
+                setStatusMessage(`PausableContractRemoved Event: Target ${args.target} by ${args.caller}`);
+                setManagedContracts(prev => prev.filter(addr => addr.toLowerCase() !== args.target.toLowerCase()));
+            } catch(e: unknown) { console.error("Error decoding PausableContractRemoved event:", e); }
+          });
+      }
   });
 
-  const refetchAll = () => { /* Potentially refetch managed contracts if not relying solely on events */ };
 
-  const handleWrite = (functionName: string, args: any[], successMessage?: string) => {
+  const refetchAll = useCallback(() => { /* Potentially refetch managed contracts if not relying solely on events */ }, []);
+
+  const handleWrite = (functionName: string, args: unknown[], successMessage?: string) => {
     if (!PAUSABLE_GOVERNOR_ADDRESS) { setStatusMessage('Pausable Governor contract address not set'); return; }
     writeContract({
       address: PAUSABLE_GOVERNOR_ADDRESS,
@@ -165,7 +240,9 @@ export function PausableGovernorAdmin() {
   };
   
   const handleCheckHasRole = () => {
-    if (!checkRoleBytes32 || !checkRoleAccountAddress) { setHasRoleStatus('Role or account address missing for check.'); return; }
+    if (!checkRoleBytes32 || !checkRoleAccountAddress) { setHasRoleStatus('Role or account address missing for check.'); setHasRoleResult(null); return; }
+    setHasRoleStatus("Checking...");
+    setHasRoleResult(null);
     fetchHasRole();
   };
 
@@ -205,7 +282,7 @@ export function PausableGovernorAdmin() {
     if (isConfirmed) { setStatusMessage(`Transaction successful! Hash: ${writeHash}`); refetchAll(); }
     if (writeError) { setStatusMessage(`Transaction Error: ${writeError.message}`); }
     if (receiptError) { setStatusMessage(`Receipt Error: ${receiptError.message}`); }
-  }, [isConfirmed, writeHash, writeError, receiptError]);
+  }, [isConfirmed, writeHash, writeError, receiptError, refetchAll]);
 
   if (!PAUSABLE_GOVERNOR_ADDRESS) {
     return <p className="text-red-500">Error: NEXT_PUBLIC_PAUSABLE_GOVERNOR_ADDRESS is not set.</p>;
@@ -239,9 +316,17 @@ export function PausableGovernorAdmin() {
         </div>
         {/* Check Role */}
         <div className="mt-4">
-            <label className="block text-sm font-medium">Account Address to Check:</label>
-            <input type="text" value={checkRoleAccountAddress} onChange={(e) => setCheckRoleAccountAddress(e.target.value)} placeholder="0x..." className="input-style" />
-            <button onClick={handleCheckHasRole} disabled={!checkRoleBytes32 || !checkRoleAccountAddress} className="button-style bg-teal-500 hover:bg-teal-600 mt-1">Check Role</button>
+            <label htmlFor="checkRoleNameGov" className="block text-sm font-medium">Select Role to Check:</label>
+            <select id="checkRoleNameGov" value={checkRoleName} onChange={(e) => { setCheckRoleName(e.target.value); setHasRoleResult(null); setHasRoleStatus('');}} className="input-style">
+                <option value="">-- Select Role --</option>
+                <option value="DEFAULT_ADMIN_ROLE">DEFAULT_ADMIN_ROLE</option>
+                {roleNames.filter(name => name === 'PAUSER_ROLE').map(name => <option key={`check-${name}`} value={name}>{name}</option>)}
+            </select>
+            <label htmlFor="checkRoleAccGov" className="block text-sm font-medium mt-2">Account Address to Check:</label>
+            <input type="text" id="checkRoleAccGov" value={checkRoleAccountAddress} onChange={(e) => {setCheckRoleAccountAddress(e.target.value); setHasRoleResult(null); setHasRoleStatus('');}} placeholder="0x..." className="input-style" />
+            <button onClick={handleCheckHasRole} disabled={!checkRoleBytes32 || !checkRoleAccountAddress || isHasRoleLoading} className="button-style bg-teal-500 hover:bg-teal-600 mt-1">
+              {isHasRoleLoading ? 'Checking...' : 'Check Role'}
+            </button>
             {hasRoleStatus && <p className="text-xs text-gray-600">{hasRoleStatus}</p>}
             {hasRoleResult !== null && <p>Has Role: {hasRoleResult.toString()}</p>}
         </div>
@@ -292,14 +377,19 @@ export function PausableGovernorAdmin() {
           <h3 className="text-lg font-medium text-black mb-2">Recent Role Events (Governor)</h3>
           {roleEvents.length === 0 && <p className="text-xs text-gray-500">No role events.</p>}
           <ul className="text-xs space-y-1">
-            {roleEvents.slice(-5).reverse().map((event: any, i) => <li key={`role-${i}`}>{`${event.eventName}: ${roleHashMap[event.role] || event.role} to/from ${event.account}`}</li>)}
+            {roleEvents.slice(-5).reverse().map((event, i) => {
+                const eventType = 'sender' in event ? 'RoleGranted' : 'RoleRevoked';
+                return <li key={`role-${i}`}>{`${eventType}: ${roleHashMap[event.role] || event.role.substring(0,10)+"..."} to/from ${event.account}`}</li>
+            })}
           </ul>
         </div>
         <div className="p-4 border rounded bg-gray-50">
           <h3 className="text-lg font-medium text-black mb-2">Recent Governor Action Events</h3>
           {governorEvents.length === 0 && <p className="text-xs text-gray-500">No governor action events.</p>}
           <ul className="text-xs space-y-1">
-            {governorEvents.slice(-5).reverse().map((event: any, i) => <li key={`gov-${i}`}>{`${event.eventName}: Target/Account: ${event.args?.target || event.args?.account || JSON.stringify(event.args)}`}</li>)}
+            {governorEvents.slice(-5).reverse().map((event, i) => (
+                <li key={`gov-${i}`}>{`${event.eventName}: Target ${event.target || "N/A"}, Caller: ${event.caller || "N/A" }`}</li>
+            ))}
           </ul>
         </div>
       </div>

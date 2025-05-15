@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
 import { Address, Abi, decodeEventLog, Hex, keccak256, toHex } from 'viem';
 import developerRegistryAbiJson from '@/abis/DeveloperRegistry.json';
@@ -30,6 +30,12 @@ type KYCStatusChangedEventArgs = {
   isVerified: boolean;
 };
 
+interface DeveloperInfo {
+  kycDataHash: Hex;
+  isVerified: boolean;
+  timesFunded: bigint; // Or string if already formatted, but bigint is typical from contract
+}
+
 const DEVELOPER_REGISTRY_ADDRESS = process.env.NEXT_PUBLIC_DEVELOPER_REGISTRY_ADDRESS as Address | undefined;
 
 const developerRegistryAbi = developerRegistryAbiJson.abi;
@@ -58,7 +64,7 @@ const createRoleHashMap = (roleNames: string[]): { [hash: Hex]: string } => {
 };
 
 export function DeveloperRegistryAdmin() {
-  const { address: connectedAddress } = useAccount();
+  const {} = useAccount(); // connectedAddress removed as it was unused
   const { data: writeHash, writeContract, isPending: isWritePending, error: writeError } = useWriteContract();
   const { isLoading: isConfirming, isSuccess: isConfirmed, error: receiptError } = useWaitForTransactionReceipt({ hash: writeHash });
 
@@ -89,7 +95,7 @@ export function DeveloperRegistryAdmin() {
   const [kycDataLocation, setKycDataLocation] = useState<string>('');
   const [kycVerifiedStatus, setKycVerifiedStatus] = useState<boolean>(false);
   const [viewKycDeveloperAddress, setViewKycDeveloperAddress] = useState<string>('');
-  const [developerInfo, setDeveloperInfo] = useState<any | null>(null); // Adjust type as per DevInfo struct
+  const [developerInfo, setDeveloperInfo] = useState<DeveloperInfo | null>(null);
   const [developerKycLocation, setDeveloperKycLocation] = useState<string | null>(null);
   const [kycEvents, setKycEvents] = useState<(KYCSubmittedEventArgs | KYCStatusChangedEventArgs)[]>([]);
 
@@ -149,10 +155,14 @@ export function DeveloperRegistryAdmin() {
         const roleHash = keccak256(roleHex);
         setSelectedRoleBytes32(roleHash);
         setStatusMessage(''); // Clear previous errors if any
-      } catch (e: any) {
+      } catch (e: unknown) {
         console.error("Error computing role hash:", e);
         setSelectedRoleBytes32(null);
-        setStatusMessage(`Error computing role hash: ${e.message}`);
+        if (e instanceof Error) {
+            setStatusMessage(`Error computing role hash: ${e.message}`);
+        } else {
+            setStatusMessage('An unknown error occurred while computing role hash.');
+        }
       }
     } else {
       setSelectedRoleBytes32(null); // Clear if no role is selected
@@ -170,10 +180,14 @@ export function DeveloperRegistryAdmin() {
           const roleHash = keccak256(roleHex);
           setCheckRoleBytes32(roleHash);
           setHasRoleStatus('');
-        } catch (e: any) {
+        } catch (e: unknown) {
           console.error("Error computing check role hash:", e);
           setCheckRoleBytes32(null);
-          setHasRoleStatus(`Error computing role hash for check: ${e.message}`);
+          if (e instanceof Error) {
+            setHasRoleStatus(`Error computing role hash for check: ${e.message}`);
+          } else {
+            setHasRoleStatus('An unknown error occurred while computing check role hash.');
+          }
         }
       }
     } else {
@@ -199,7 +213,7 @@ export function DeveloperRegistryAdmin() {
           const roleName = roleHashMap[args.role] || args.role; // Fallback to hash
           setRoleEvents(prevEvents => [...prevEvents, args]);
           setStatusMessage(`RoleGranted event: Role ${roleName} (${args.role.substring(0,10)}...) granted to ${args.account} by ${args.sender}`);
-        } catch (e) {
+        } catch (e: unknown) {
           console.error("Error decoding RoleGranted event:", e);
           setStatusMessage("Error processing RoleGranted event.");
         }
@@ -229,7 +243,7 @@ export function DeveloperRegistryAdmin() {
           const roleName = roleHashMap[args.role] || args.role;
           setRoleEvents(prevEvents => [...prevEvents, args]);
           setStatusMessage(`RoleRevoked event: Role ${roleName} (${args.role.substring(0,10)}...) revoked from ${args.account} by ${args.sender}`);
-        } catch (e) {
+        } catch (e: unknown) {
           console.error("Error decoding RoleRevoked event:", e);
           setStatusMessage("Error processing RoleRevoked event.");
         }
@@ -258,7 +272,7 @@ export function DeveloperRegistryAdmin() {
           const args = decoded.args as unknown as KYCSubmittedEventArgs;
           setKycEvents(prevEvents => [...prevEvents, args]);
           setStatusMessage(`KYCSubmitted event: Developer ${args.developer}, Hash: ${args.kycHash.substring(0,10)}...`);
-        } catch (e) {
+        } catch (e: unknown) {
           console.error("Error decoding KYCSubmitted event:", e);
           setStatusMessage("Error processing KYCSubmitted event.");
         }
@@ -287,7 +301,7 @@ export function DeveloperRegistryAdmin() {
           const args = decoded.args as unknown as KYCStatusChangedEventArgs;
           setKycEvents(prevEvents => [...prevEvents, args]);
           setStatusMessage(`KYCStatusChanged event: Developer ${args.developer}, Verified: ${args.isVerified}`);
-        } catch (e) {
+        } catch (e: unknown) {
           console.error("Error decoding KYCStatusChanged event:", e);
           setStatusMessage("Error processing KYCStatusChanged event.");
         }
@@ -300,17 +314,17 @@ export function DeveloperRegistryAdmin() {
   });
 
   // Refetch function (existing + new)
-  const refetchAll = () => {
+  const refetchAll = useCallback(() => {
     refetchPaused();
     // ... refetch other data ...
     if (viewKycDeveloperAddress) { // Also refetch KYC info if an address is being viewed
       fetchDeveloperInfo();
       fetchKycLocation();
     }
-  };
+  }, [refetchPaused, viewKycDeveloperAddress, fetchDeveloperInfo, fetchKycLocation]);
 
   // --- Write Functions ---
-  const handleWrite = (functionName: string, args: any[], successMessage?: string) => {
+  const handleWrite = (functionName: string, args: unknown[], successMessage?: string) => {
     if (!DEVELOPER_REGISTRY_ADDRESS) { setStatusMessage('Developer Registry contract address not set'); return; }
     setStatusMessage('');
     writeContract({
@@ -336,8 +350,12 @@ export function DeveloperRegistryAdmin() {
     try {
       const to = grantRoleToAddress as Address;
       handleWrite('grantRole', [selectedRoleBytes32, to], `Granting ${selectedRoleName} to ${to}...`);
-    } catch (e: any) {
-      setStatusMessage(`Error preparing grantRole transaction: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Error preparing grantRole transaction: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while preparing grantRole transaction.');
+      }
     }
   };
 
@@ -353,8 +371,12 @@ export function DeveloperRegistryAdmin() {
     try {
       const from = revokeRoleFromAddress as Address;
       handleWrite('revokeRole', [selectedRoleBytes32, from], `Revoking ${selectedRoleName} from ${from}...`);
-    } catch (e: any) {
-      setStatusMessage(`Error preparing revokeRole transaction: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Error preparing revokeRole transaction: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while preparing revokeRole transaction.');
+      }
     }
   };
 
@@ -377,9 +399,9 @@ export function DeveloperRegistryAdmin() {
     fetchHasRole();
   };
 
-  const handleSetDeveloperVerification = () => {
-    // ... existing code ...
-  };
+  // const handleSetDeveloperVerification = () => { // Removed as unused
+  //   // ... existing code ...
+  // };
 
   // --- KYC Write Functions ---
   const handleSubmitKyc = () => {
@@ -395,8 +417,12 @@ export function DeveloperRegistryAdmin() {
       const dev = kycDeveloperAddress as Address;
       const hash = kycDocsHash as Hex;
       handleWrite('submitKYC', [dev, hash, kycDataLocation], `Submitting KYC for ${dev}...`);
-    } catch (e: any) {
-      setStatusMessage(`Error preparing submitKYC transaction: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Error preparing submitKYC transaction: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while preparing submitKYC transaction.');
+      }
     }
   };
 
@@ -408,8 +434,12 @@ export function DeveloperRegistryAdmin() {
     try {
       const dev = kycDeveloperAddress as Address; // Use the same address state or a dedicated one
       handleWrite('setVerifiedStatus', [dev, kycVerifiedStatus], `Setting KYC status for ${dev} to ${kycVerifiedStatus}...`);
-    } catch (e: any) {
-      setStatusMessage(`Error preparing setVerifiedStatus transaction: ${e.message}`);
+    } catch (e: unknown) {
+      if (e instanceof Error) {
+        setStatusMessage(`Error preparing setVerifiedStatus transaction: ${e.message}`);
+      } else {
+        setStatusMessage('An unknown error occurred while preparing setVerifiedStatus transaction.');
+      }
     }
   };
 
@@ -457,7 +487,7 @@ export function DeveloperRegistryAdmin() {
 
   // Effect for KYC View Data
   useEffect(() => {
-    if (devInfoData) setDeveloperInfo(devInfoData);
+    if (devInfoData) setDeveloperInfo(devInfoData as unknown as DeveloperInfo);
     if (devInfoError) setStatusMessage(`Error fetching developer info: ${devInfoError.message}`);
   }, [devInfoData, devInfoError]);
 
@@ -498,6 +528,28 @@ export function DeveloperRegistryAdmin() {
           </select>
           {selectedRoleName && <p className="text-xs text-gray-700 mt-1">Computed Role Hash: {selectedRoleBytes32 || (selectedRoleName ? 'Calculating...' : 'N/A')}</p>}
         </div>
+
+        {/* Grant Role Inputs */}
+        <div className="mt-4">
+            <label htmlFor="grantRoleAddressDevReg" className="block text-sm font-medium text-black">Address to Grant Role To:</label>
+            <input
+                type="text"
+                id="grantRoleAddressDevReg"
+                value={grantRoleToAddress} 
+                onChange={(e) => setGrantRoleToAddress(e.target.value)}
+                placeholder="0x... Address to grant role to"
+                className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black placeholder-gray-500"
+            />
+        </div>
+        <button
+            onClick={handleGrantRole}
+            disabled={!selectedRoleBytes32 || !grantRoleToAddress || isWritePending || isConfirming}
+            className="mt-2 px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
+        >
+            Grant Role
+        </button>
+
+        {/* Revoke Role Inputs */}
         <div className="mt-4">
             <label htmlFor="revokeRoleAddressDevReg" className="block text-sm font-medium text-black">Address to Revoke Role From:</label>
             <input
@@ -651,15 +703,15 @@ export function DeveloperRegistryAdmin() {
         <h3 className="text-xl font-medium text-black mb-3">Recent RoleGranted Events</h3>
         {roleEvents.length === 0 && <p className="text-gray-700">No RoleGranted events detected yet.</p>}
         <ul className="space-y-3">
-          {roleEvents.slice(-5).reverse().map((event, index) => { // Display last 5 events, reversed for newest first
+          {roleEvents.slice(-5).reverse().map((event: RoleGrantedEventArgs | RoleRevokedEventArgs, index) => { // Display last 5 events, reversed for newest first
             const roleName = roleHashMap[event.role] || event.role; // Fallback to hash
-            const eventType = (event as any).sender ? 'RoleGranted' : 'RoleRevoked'; // Basic type check
+            const eventType = 'sender' in event && event.sender ? 'RoleGranted' : 'RoleRevoked'; 
             return (
               <li key={index} className="p-3 bg-white border border-gray-200 rounded shadow-sm">
                 <p className="text-sm text-black"><strong>Event: {eventType}</strong></p>
                 <p className="text-sm text-black"><strong>Role:</strong> {roleName} ({event.role.substring(0, 10)}...)</p>
                 <p className="text-sm text-black"><strong>Account:</strong> {event.account}</p>
-                <p className="text-sm text-black"><strong>Sender:</strong> {event.sender}</p>
+                {'sender' in event && event.sender && <p className="text-sm text-black"><strong>Sender:</strong> {event.sender}</p>}
               </li>
             );
           })}

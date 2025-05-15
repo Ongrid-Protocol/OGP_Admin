@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
 import { Address, Abi, decodeEventLog, Hex, keccak256, toHex } from 'viem';
 import liquidityPoolManagerAbiJson from '@/abis/LiquidityPoolManager.json';
@@ -25,10 +25,11 @@ type PoolCreatedEventArgs = {
   creator: Address;
 };
 
-type PoolRiskLevelSetEventArgs = { // Assuming an event for this based on guide, confirm ABI
+type PoolRiskLevelSetEventArgs = {
     poolId: bigint;
     riskLevel: number; // uint16
     baseAprBps: number; // uint16
+    eventName?: 'PoolRiskLevelSet' | 'PoolConfigUpdated'; 
 };
 
 type LoanDefaultedEventArgs = {
@@ -66,7 +67,7 @@ const createRoleHashMap = (roleNames: string[]): { [hash: Hex]: string } => {
 };
 
 export function LiquidityPoolManagerAdmin() {
-  const { address: connectedAddress } = useAccount();
+  const {} = useAccount();
   const { data: writeHash, writeContract, isPending: isWritePending, error: writeError } = useWriteContract();
   const { isLoading: isConfirming, isSuccess: isConfirmed, error: receiptError } = useWaitForTransactionReceipt({ hash: writeHash });
 
@@ -82,7 +83,11 @@ export function LiquidityPoolManagerAdmin() {
   const [grantRoleToAddress, setGrantRoleToAddress] = useState<string>('');
   const [revokeRoleFromAddress, setRevokeRoleFromAddress] = useState<string>('');
   const [roleEvents, setRoleEvents] = useState<(RoleGrantedEventArgs | RoleRevokedEventArgs)[]>([]);
-  const [poolManagementEvents, setPoolManagementEvents] = useState<(PoolCreatedEventArgs | PoolRiskLevelSetEventArgs | LoanDefaultedEventArgs)[]>([]);
+  const [poolManagementEvents, setPoolManagementEvents] = useState<(
+      PoolCreatedEventArgs & { eventName: 'PoolCreated' } | 
+      PoolRiskLevelSetEventArgs & { eventName: 'PoolConfigUpdated' | 'PoolRiskLevelSet' } |
+      LoanDefaultedEventArgs & { eventName: 'LoanDefaulted' }
+    )[]>([]);
   const [roleHashMap, setRoleHashMap] = useState<{ [hash: Hex]: string }>({});
   const [statusMessage, setStatusMessage] = useState<string>('');
 
@@ -105,8 +110,20 @@ export function LiquidityPoolManagerAdmin() {
   const [viewPoolId, setViewPoolId] = useState<string>('');
   const [viewLoanPoolId, setViewLoanPoolId] = useState<string>('');
   const [viewLoanProjectId, setViewLoanProjectId] = useState<string>('');
-  const [poolInfo, setPoolInfo] = useState<any | null>(null);
-  const [poolLoanRecord, setPoolLoanRecord] = useState<any | null>(null);
+  const [poolInfo, setPoolInfo] = useState<{
+    exists?: boolean;
+    name?: string;
+    totalAssets?: bigint;
+    totalShares?: bigint;
+    riskLevel?: string;
+    baseAprBps?: string;
+  } | null>(null);
+  const [poolLoanRecord, setPoolLoanRecord] = useState<{
+    isActive?: boolean;
+    principal?: bigint;
+    aprBps?: number;
+    startTime?: bigint;
+  } | null>(null);
 
   // --- Read Hooks ---
   const { data: pausedData, refetch: refetchPaused } = useReadContract({
@@ -173,10 +190,14 @@ export function LiquidityPoolManagerAdmin() {
         const roleHash = keccak256(roleHex);
         setSelectedRoleBytes32(roleHash);
         setStatusMessage('');
-      } catch (e: any) {
+      } catch (e: unknown) {
         console.error("Error computing role hash:", e);
         setSelectedRoleBytes32(null);
-        setStatusMessage(`Error computing role hash: ${e.message}`);
+        if (e instanceof Error) {
+            setStatusMessage(`Error computing role hash: ${e.message}`);
+        } else {
+            setStatusMessage('An unknown error occurred while computing role hash.');
+        }
       }
     } else {
       setSelectedRoleBytes32(null);
@@ -194,10 +215,14 @@ export function LiquidityPoolManagerAdmin() {
           const roleHash = keccak256(roleHex);
           setCheckRoleBytes32(roleHash);
           setHasRoleStatus('');
-        } catch (e: any) {
+        } catch (e: unknown) {
           console.error("Error computing check role hash:", e);
           setCheckRoleBytes32(null);
-          setHasRoleStatus(`Error computing role hash for check: ${e.message}`);
+          if (e instanceof Error) {
+            setHasRoleStatus(`Error computing role hash for check: ${e.message}`);
+          } else {
+            setHasRoleStatus('An unknown error occurred while computing check role hash.');
+          }
         }
       }
     } else {
@@ -229,7 +254,7 @@ export function LiquidityPoolManagerAdmin() {
           const roleName = roleHashMap[args.role] || args.role; // Fallback to hash
           setRoleEvents(prevEvents => [...prevEvents, args]);
           setStatusMessage(`RoleGranted event: Role ${roleName} (${args.role.substring(0,10)}...) granted to ${args.account} by ${args.sender}`);
-        } catch (e) { console.error("Error decoding RoleGranted event:", e); setStatusMessage("Error processing RoleGranted event."); }
+        } catch (e: unknown) { console.error("Error decoding RoleGranted event:", e); setStatusMessage("Error processing RoleGranted event."); }
       });
     },
     onError(error) { console.error('Error watching RoleGranted event:', error); setStatusMessage(`Error watching RoleGranted event: ${error.message}`); }
@@ -247,7 +272,7 @@ export function LiquidityPoolManagerAdmin() {
           const roleName = roleHashMap[args.role] || args.role;
           setRoleEvents(prevEvents => [...prevEvents, args]);
           setStatusMessage(`RoleRevoked event: Role ${roleName} (${args.role.substring(0,10)}...) revoked from ${args.account}`);
-        } catch (e) { console.error("Error decoding RoleRevoked event:", e); setStatusMessage("Error processing RoleRevoked event."); }
+        } catch (e: unknown) { console.error("Error decoding RoleRevoked event:", e); setStatusMessage("Error processing RoleRevoked event."); }
       });
     },
     onError(error) { console.error('Error watching RoleRevoked event:', error); setStatusMessage(`Error watching RoleRevoked event: ${error.message}`); }
@@ -262,21 +287,18 @@ export function LiquidityPoolManagerAdmin() {
         try {
           const decoded = decodeEventLog({ abi: liquidityPoolManagerAbi, data: log.data, topics: log.topics, eventName: 'PoolCreated' });
           const args = decoded.args as unknown as PoolCreatedEventArgs;
-          setPoolManagementEvents(prevEvents => [...prevEvents, args]);
+          setPoolManagementEvents(prevEvents => [...prevEvents, { ...args, eventName: 'PoolCreated' as const }]);
           setStatusMessage(`PoolCreated event: ID ${args.poolId.toString()}, Name ${args.name}, Creator ${args.creator}`);
-        } catch (e) { console.error("Error decoding PoolCreated event:", e); setStatusMessage("Error processing PoolCreated event."); }
+        } catch (e: unknown) { console.error("Error decoding PoolCreated event:", e); setStatusMessage("Error processing PoolCreated event."); }
       });
     },
     onError(error) { console.error('Error watching PoolCreated event:', error); setStatusMessage(`Error watching PoolCreated event: ${error.message}`); }
   });
 
-  // Watch PoolRiskLevelSet - (NOTE: Assuming this event exists or a similar one like PoolConfigUpdated)
-  // If no direct event, UI feedback will rely on transaction success and refetching data.
   useWatchContractEvent({
     address: LIQUIDITY_POOL_MANAGER_ADDRESS,
     abi: liquidityPoolManagerAbi,
-    // eventName: 'PoolRiskLevelSet', // Replace with actual event name from ABI if it exists
-    eventName: 'PoolConfigUpdated', // Example if a generic config update event is used
+    eventName: 'PoolConfigUpdated',
     onLogs(logs) {
       logs.forEach(log => {
         try {
@@ -284,27 +306,19 @@ export function LiquidityPoolManagerAdmin() {
             abi: liquidityPoolManagerAbi,
             data: log.data,
             topics: log.topics,
-            eventName: 'PoolConfigUpdated' // Or the actual event name if different
+            eventName: 'PoolConfigUpdated'
           });
-          // Assuming PoolConfigUpdated event provides args similar to PoolRiskLevelSetEventArgs
-          // If the structure is different, a new EventArgs type for PoolConfigUpdated would be needed.
-          const args = decoded.args as unknown as PoolRiskLevelSetEventArgs; 
+          const args = decoded.args as unknown as PoolRiskLevelSetEventArgs;
+          setPoolManagementEvents(prevEvents => [...prevEvents, { ...args, eventName: 'PoolConfigUpdated' as const }]);
           
-          // Add a property to distinguish this event type if storing in a common array
-          // For example: setPoolManagementEvents(prevEvents => [...prevEvents, { ...args, eventName: 'PoolConfigUpdated' }]);
-          // Or, if PoolRiskLevelSetEventArgs is the correct structure:
-          setPoolManagementEvents(prevEvents => [...prevEvents, args]);
-          
-          // Construct a more informative status message using decoded args
           let statusDetail = `Pool ${args.poolId?.toString()} config updated.`;
-          if (args.riskLevel !== undefined) statusDetail += ` Risk Level: ${args.riskLevel}.`;
-          if (args.baseAprBps !== undefined) statusDetail += ` Base APR: ${args.baseAprBps}bps.`;
+          if (args.riskLevel !== undefined) statusDetail += ` Risk Level: ${args.riskLevel.toString()}.`;
+          if (args.baseAprBps !== undefined) statusDetail += ` Base APR: ${args.baseAprBps.toString()}bps.`;
           setStatusMessage(statusDetail);
 
-        } catch (e) {
+        } catch (e: unknown) {
           console.error("Error decoding PoolConfigUpdated event:", e);
-          // Keep a generic message or log specific decoding error
-          setStatusMessage(`Error processing PoolConfigUpdated event. Raw log: ${JSON.stringify(log)}`);
+          setStatusMessage(`Error processing PoolConfigUpdated event.`);
         }
       });
     }
@@ -319,17 +333,16 @@ export function LiquidityPoolManagerAdmin() {
         try {
           const decoded = decodeEventLog({ abi: liquidityPoolManagerAbi, data: log.data, topics: log.topics, eventName: 'LoanDefaulted' });
           const args = decoded.args as unknown as LoanDefaultedEventArgs;
-          setPoolManagementEvents(prevEvents => [...prevEvents, args]);
+          setPoolManagementEvents(prevEvents => [...prevEvents, { ...args, eventName: 'LoanDefaulted' as const }]);
           setStatusMessage(`LoanDefaulted event: Pool ${args.poolId.toString()}, Project ${args.projectId.toString()}`);
-        } catch (e) { console.error("Error decoding LoanDefaulted event:", e); setStatusMessage("Error processing LoanDefaulted event."); }
+        } catch (e: unknown) { console.error("Error decoding LoanDefaulted event:", e); setStatusMessage("Error processing LoanDefaulted event."); }
       });
     },
     onError(error) { console.error('Error watching LoanDefaulted event:', error); setStatusMessage(`Error watching LoanDefaulted event: ${error.message}`); }
   });
 
-  const refetchAll = () => {
+  const refetchAll = useCallback(() => {
     refetchPaused();
-    // Call refetch for other specific data if added
     if (viewPoolId) {
         fetchPoolInfo();
         fetchPoolRiskLevels();
@@ -338,9 +351,9 @@ export function LiquidityPoolManagerAdmin() {
     if (viewLoanPoolId && viewLoanProjectId) {
         fetchPoolLoanRecord();
     }
-  };
+  }, [refetchPaused, viewPoolId, fetchPoolInfo, fetchPoolRiskLevels, fetchPoolAprRates, viewLoanPoolId, viewLoanProjectId, fetchPoolLoanRecord]);
 
-  const handleWrite = (functionName: string, args: any[], successMessage?: string) => {
+  const handleWrite = (functionName: string, args: unknown[], successMessage?: string) => {
     if (!LIQUIDITY_POOL_MANAGER_ADDRESS) { setStatusMessage('Liquidity Pool Manager address not set'); return; }
     setStatusMessage('');
     writeContract({
@@ -359,7 +372,10 @@ export function LiquidityPoolManagerAdmin() {
     if (!grantRoleToAddress) { setStatusMessage('Please enter address to grant role.'); return; }
     try {
       handleWrite('grantRole', [selectedRoleBytes32, grantRoleToAddress as Address], `Granting ${selectedRoleName} to ${grantRoleToAddress}...`);
-    } catch (e: any) { setStatusMessage(`Error preparing grantRole: ${e.message}`); }
+    } catch (e: unknown) { 
+        if (e instanceof Error) setStatusMessage(`Error preparing grantRole: ${e.message}`);
+        else setStatusMessage('An unknown error occurred while preparing grantRole.');
+    }
   };
 
   const handleRevokeRole = () => {
@@ -367,7 +383,10 @@ export function LiquidityPoolManagerAdmin() {
     if (!revokeRoleFromAddress) { setStatusMessage('Please enter address to revoke role from.'); return; }
     try {
       handleWrite('revokeRole', [selectedRoleBytes32, revokeRoleFromAddress as Address], `Revoking ${selectedRoleName} from ${revokeRoleFromAddress}...`);
-    } catch (e: any) { setStatusMessage(`Error preparing revokeRole: ${e.message}`); }
+    } catch (e: unknown) { 
+        if (e instanceof Error) setStatusMessage(`Error preparing revokeRole: ${e.message}`);
+        else setStatusMessage('An unknown error occurred while preparing revokeRole.');
+    }
   };
 
   const handleCheckHasRole = () => {
@@ -404,7 +423,10 @@ export function LiquidityPoolManagerAdmin() {
       if (isNaN(riskLevel) || riskLevel < 1 || riskLevel > 3) { setStatusMessage('Risk level must be 1, 2, or 3.'); return; }
       if (isNaN(baseAprBps) || baseAprBps < 0) { setStatusMessage('Base APR BPS must be a non-negative number.'); return; }
       handleWrite('setPoolRiskLevel', [poolId, riskLevel, baseAprBps], `Setting Pool ${poolId} risk to ${riskLevel}, APR ${baseAprBps}bps...`);
-    } catch (e: any) { setStatusMessage(`Error preparing setPoolRiskLevel: ${e.message}`); }
+    } catch (e: unknown) { 
+        if (e instanceof Error) setStatusMessage(`Error preparing setPoolRiskLevel: ${e.message}`);
+        else setStatusMessage('An unknown error occurred while preparing setPoolRiskLevel.');
+    }
   };
 
   const handleLoanDefault = () => {
@@ -414,7 +436,10 @@ export function LiquidityPoolManagerAdmin() {
       const projectId = BigInt(defaultProjectId);
       const writeOff = defaultWriteOffAmount ? BigInt(defaultWriteOffAmount) : BigInt(0);
       handleWrite('handleLoanDefault', [poolId, projectId, writeOff, defaultSlashDeposit], `Handling default for Project ${projectId} in Pool ${poolId}...`);
-    } catch (e: any) { setStatusMessage(`Error preparing handleLoanDefault: ${e.message}`); }
+    } catch (e: unknown) { 
+        if (e instanceof Error) setStatusMessage(`Error preparing handleLoanDefault: ${e.message}`);
+        else setStatusMessage('An unknown error occurred while preparing handleLoanDefault.');
+    }
   };
 
   const handleViewPoolInfo = () => {
@@ -440,10 +465,11 @@ export function LiquidityPoolManagerAdmin() {
   // Aggregate and display Pool Info
   useEffect(() => {
     if (poolInfoData != null && poolRiskLevelsData != null && poolAprRatesData != null) {
+        const info = poolInfoData as { exists: boolean, name: string, totalAssets: bigint, totalShares: bigint /* ... other fields */ };
         setPoolInfo({
-            ...(poolInfoData as object), // Cast to ensure it's spreadable if it's an object/struct
-            riskLevel: (poolRiskLevelsData as any).toString(), 
-            baseAprBps: (poolAprRatesData as any).toString(),
+            ...info, 
+            riskLevel: (poolRiskLevelsData as bigint | number)?.toString(),
+            baseAprBps: (poolAprRatesData as bigint | number)?.toString(),
         });
     } else {
         setPoolInfo(null);
@@ -453,7 +479,7 @@ export function LiquidityPoolManagerAdmin() {
   // Display Pool Loan Record
   useEffect(() => {
     if (poolLoanRecordData) {
-        setPoolLoanRecord(poolLoanRecordData);
+        setPoolLoanRecord(poolLoanRecordData as typeof poolLoanRecord);
     } else {
         setPoolLoanRecord(null);
     }
@@ -470,7 +496,6 @@ export function LiquidityPoolManagerAdmin() {
       <div className="p-4 border rounded bg-gray-50">
         <h3 className="text-xl font-medium text-black mb-2">Contract Status</h3>
         <p className="text-black"><strong>Paused:</strong> {isPaused === null ? 'Loading...' : isPaused ? 'Yes' : 'No'}</p>
-        {/* Display other relevant LiquidityPoolManager status (e.g., number of pools) */}
         <button onClick={refetchAll} className="mt-2 px-3 py-1 text-sm bg-blue-500 text-white rounded hover:bg-blue-600">Refresh Data</button>
       </div>
       
@@ -499,7 +524,6 @@ export function LiquidityPoolManagerAdmin() {
         <button onClick={handleRevokeRole} disabled={!selectedRoleBytes32 || !revokeRoleFromAddress || isWritePending || isConfirming} className="mt-2 px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 disabled:bg-gray-400">Revoke Role</button>
       </div>
 
-      {/* Check Role Section */}
       <div className="space-y-4 p-4 border rounded bg-gray-50">
         <h3 className="text-xl font-medium text-black">Check Role (hasRole)</h3>
         <div>
@@ -551,8 +575,6 @@ export function LiquidityPoolManagerAdmin() {
           </div>
       </div>
 
-      {/* --- Pool Management Functions --- */}
-      {/* Create New Liquidity Pool */}
       <div className="space-y-4 p-4 border rounded bg-gray-50">
         <h3 className="text-xl font-medium text-black">Create New Liquidity Pool</h3>
         <p className="text-sm text-gray-700">Requires DEFAULT_ADMIN_ROLE.</p>
@@ -563,7 +585,6 @@ export function LiquidityPoolManagerAdmin() {
         <button onClick={handleCreatePool} disabled={isWritePending || isConfirming || !createPoolName} className="button-style bg-indigo-500 hover:bg-indigo-600">Create Pool</button>
       </div>
 
-      {/* Set Pool Risk Level and Base APR */}
       <div className="space-y-4 p-4 border rounded bg-gray-50">
         <h3 className="text-xl font-medium text-black">Set Pool Risk Level and Base APR</h3>
         <p className="text-sm text-gray-700">Requires DEFAULT_ADMIN_ROLE.</p>
@@ -582,7 +603,6 @@ export function LiquidityPoolManagerAdmin() {
         <button onClick={handleSetPoolRisk} disabled={isWritePending || isConfirming || !setRiskPoolId || !setRiskLevel || !setRiskBaseApr} className="button-style bg-purple-500 hover:bg-purple-600">Set Pool Risk/APR</button>
       </div>
 
-      {/* Handle Loan Default in a Pool */}
       <div className="space-y-4 p-4 border rounded bg-gray-50">
         <h3 className="text-xl font-medium text-black">Handle Loan Default in Pool</h3>
         <p className="text-sm text-gray-700">Requires DEFAULT_ADMIN_ROLE.</p>
@@ -605,7 +625,6 @@ export function LiquidityPoolManagerAdmin() {
         <button onClick={handleLoanDefault} disabled={isWritePending || isConfirming || !defaultPoolId || !defaultProjectId} className="button-style bg-red-600 hover:bg-red-700">Handle Loan Default</button>
       </div>
 
-      {/* View Pool and Loan Information */}
       <div className="space-y-4 p-4 border rounded bg-gray-50">
         <h3 className="text-xl font-medium text-black">View Pool Information</h3>
         <div>
@@ -624,7 +643,6 @@ export function LiquidityPoolManagerAdmin() {
             <p className="text-black">Total Shares: {poolInfo.totalShares?.toString()}</p>
             <p className="text-black">Risk Level: {poolInfo.riskLevel}</p>
             <p className="text-black">Base APR (BPS): {poolInfo.baseAprBps}</p>
-            {/* Add more fields from getPoolInfo as needed */}
           </div>
         )}
       </div>
@@ -648,12 +666,10 @@ export function LiquidityPoolManagerAdmin() {
             <p className="text-black">Principal: {poolLoanRecord.principal?.toString()}</p>
             <p className="text-black">APR (BPS): {poolLoanRecord.aprBps?.toString()}</p>
             <p className="text-black">Start Time: {new Date(Number(poolLoanRecord.startTime) * 1000).toLocaleString()}</p>
-            {/* Add other fields from getPoolLoanRecord as needed */}
           </div>
         )}
       </div>
 
-      {/* Placeholder for other LiquidityPoolManager functionalities */}
       <div className="p-4 border rounded bg-gray-100">
         <p className="text-gray-700 italic">Other LiquidityPoolManager functions (createPool, allocateFundsToProject, etc.) will be added here.</p>
       </div>
@@ -664,52 +680,51 @@ export function LiquidityPoolManagerAdmin() {
         </div>
       )}
 
-      {/* Recent RoleGranted Events */}
       <div className="p-4 border rounded bg-gray-50 mt-6">
-        <h3 className="text-xl font-medium text-black mb-3">Recent RoleGranted Events</h3>
-        {roleEvents.length === 0 && <p className="text-gray-600">No RoleGranted events detected yet.</p>}
+        <h3 className="text-xl font-medium text-black mb-3">Recent Role Events (LPM)</h3>
+        {roleEvents.length === 0 && <p className="text-gray-600">No role events detected for LPM yet.</p>}
         <ul className="space-y-3">
-          {roleEvents.slice(-5).reverse().map((event, index) => { // Display last 5, newest first
-            const roleName = roleHashMap[event.role] || event.role; // Fallback to hash
+          {roleEvents.slice(-5).reverse().map((event, index) => { 
+            const roleNameDisplay = roleHashMap[event.role] || event.role;
+            const eventType = 'sender' in event ? 'RoleGranted' : 'RoleRevoked';
             return (
-              <li key={`role-${index}`} className="p-3 bg-white border border-gray-200 rounded shadow-sm">
-                <p className="text-sm text-black"><strong>Role:</strong> {roleName} ({event.role.substring(0, 10)}...)</p>
-                <p className="text-sm text-black"><strong>Account:</strong> {event.account}</p>
-                <p className="text-sm text-black"><strong>Sender:</strong> {event.sender}</p>
+              <li key={`lpm-role-${index}`} className="p-3 bg-white border border-gray-200 rounded shadow-sm">
+                <p className="text-sm text-black"><strong>Event: {eventType}</strong></p>
+                <p className="text-sm text-black">Role: {roleNameDisplay} ({event.role.substring(0,10)}...)</p>
+                <p className="text-sm text-black">Account: {event.account}</p>
+                {'sender' in event && event.sender && <p className="text-sm text-black">Sender: {event.sender}</p>}
               </li>
             );
           })}
         </ul>
       </div>
 
-      {/* Recent Pool Management Events */}
       <div className="p-4 border rounded bg-gray-50 mt-6">
         <h3 className="text-xl font-medium text-black mb-3">Recent Pool Management Events</h3>
         {poolManagementEvents.length === 0 && <p className="text-gray-600">No pool management events detected yet.</p>}
         <ul className="space-y-3">
-          {poolManagementEvents.slice(-5).reverse().map((event: any, index) => {
+          {poolManagementEvents.slice(-5).reverse().map((event, index) => {
             let eventDetails = <p>Unknown event type</p>;
             if (event.eventName === 'PoolCreated') {
-              const e = event as PoolCreatedEventArgs;
               eventDetails = <>
                 <p className="text-black"><strong>Event: PoolCreated</strong></p>
-                <p className="text-black">Pool ID: {e.poolId.toString()}</p>
-                <p className="text-black">Name: {e.name}</p>
-                <p className="text-black">Creator: {e.creator}</p>
+                <p className="text-black">Pool ID: {event.poolId.toString()}</p>
+                <p className="text-black">Name: {event.name}</p>
+                <p className="text-black">Creator: {event.creator}</p>
               </>;
-            } else if (event.eventName === 'PoolConfigUpdated') { // Or actual event name for setPoolRiskLevel
-                // Customize based on actual event args for PoolRiskLevelSet or similar
+            } else if (event.eventName === 'PoolConfigUpdated' || event.eventName === 'PoolRiskLevelSet') {
                 eventDetails = <>
-                    <p className="text-black"><strong>Event: PoolConfigUpdated</strong></p>
-                    <p className="text-black">Details: {JSON.stringify(event)}</p> {/* Generic display */}
+                    <p className="text-black"><strong>Event: {event.eventName}</strong></p>
+                    <p className="text-black">Pool ID: {event.poolId.toString()}</p>
+                    {event.riskLevel !== undefined && <p className="text-black">Risk Level: {event.riskLevel.toString()}</p>}
+                    {event.baseAprBps !== undefined && <p className="text-black">Base APR BPS: {event.baseAprBps.toString()}</p>}
                 </>;
             } else if (event.eventName === 'LoanDefaulted') {
-              const e = event as LoanDefaultedEventArgs;
               eventDetails = <>
                 <p className="text-black"><strong>Event: LoanDefaulted</strong></p>
-                <p className="text-black">Pool ID: {e.poolId.toString()}</p>
-                <p className="text-black">Project ID: {e.projectId.toString()}</p>
-                <p className="text-black">Amount Defaulted: {e.amountDefaulted.toString()}</p>
+                <p className="text-black">Pool ID: {event.poolId.toString()}</p>
+                <p className="text-black">Project ID: {event.projectId.toString()}</p>
+                <p className="text-black">Amount Defaulted: {event.amountDefaulted.toString()}</p>
               </>;
             }
             return (
