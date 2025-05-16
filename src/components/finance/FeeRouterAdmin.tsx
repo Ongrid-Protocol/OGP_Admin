@@ -549,7 +549,11 @@ export function FeeRouterAdmin() {
           <label htmlFor="viewFeeProjectId" className="block text-sm font-medium text-black">Project ID:</label>
           <input type="text" id="viewFeeProjectId" value={viewFeeProjectId} onChange={(e) => { setViewFeeProjectId(e.target.value); setProjectFeeDetails(null); setNextPaymentInfo(null); }} placeholder="Enter Project ID (uint256)" className="mt-1 block w-full input-style text-black" />
         </div>
-        <button onClick={handleViewFeeDetails} disabled={isProjectFeeDetailsLoading || isNextPaymentInfoLoading} className="button-style bg-cyan-500 hover:bg-cyan-600">
+        <button 
+          onClick={handleViewFeeDetails} 
+          disabled={isProjectFeeDetailsLoading || isNextPaymentInfoLoading || !viewFeeProjectId} 
+          className="button-style bg-cyan-500 hover:bg-cyan-600"
+        >
           {isProjectFeeDetailsLoading || isNextPaymentInfoLoading ? 'Loading Details...' : 'View Fee Details'}
         </button>
         {projectFeeDetails && (

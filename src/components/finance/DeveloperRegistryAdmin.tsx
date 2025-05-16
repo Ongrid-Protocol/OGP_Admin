@@ -409,13 +409,22 @@ export function DeveloperRegistryAdmin() {
       setStatusMessage('Please fill all KYC fields.');
       return;
     }
-    if (!kycDocsHash.startsWith('0x') || kycDocsHash.length !== 66) {
-        setStatusMessage('KYC Documents Hash must be a 32-byte hex string (e.g., 0x...).');
+    // Keep 0x prefix check, but remove length check for arbitrary length hex
+    if (!kycDocsHash.startsWith('0x')) { 
+        setStatusMessage('KYC Documents Hash must be a hex string starting with 0x.');
+        return;
+    }
+    // Optional: Add a regex to check for valid hex characters if desired, e.g. /^0x[0-9a-fA-F]*$/.test(kycDocsHash)
+    // For now, primarily relying on the 0x prefix.
+
+    // Basic address validation (viem will do more for type Address)
+    if (!kycDeveloperAddress.startsWith('0x') || kycDeveloperAddress.length !== 42) {
+        setStatusMessage('Invalid Developer Address format.');
         return;
     }
     try {
       const dev = kycDeveloperAddress as Address;
-      const hash = kycDocsHash as Hex;
+      const hash = kycDocsHash as Hex; // Keep as Hex, viem will validate if it's a valid hex string
       handleWrite('submitKYC', [dev, hash, kycDataLocation], `Submitting KYC for ${dev}...`);
     } catch (e: unknown) {
       if (e instanceof Error) {
@@ -623,14 +632,28 @@ export function DeveloperRegistryAdmin() {
           <input type="text" id="kycDevAddress" value={kycDeveloperAddress} onChange={(e) => setKycDeveloperAddress(e.target.value)} placeholder="0x..." className="mt-1 block w-full input-style text-black" />
         </div>
         <div>
-          <label htmlFor="kycDocsHash" className="block text-sm font-medium text-black">KYC Documents Hash (bytes32):</label>
-          <input type="text" id="kycDocsHash" value={kycDocsHash} onChange={(e) => setKycDocsHash(e.target.value)} placeholder="0x..." className="mt-1 block w-full input-style text-black" />
+          <label htmlFor="kycDocsHash" className="block text-sm font-medium text-black">KYC Documents Hash (hex string):</label>
+          <input type="text" id="kycDocsHash" value={kycDocsHash} onChange={(e) => setKycDocsHash(e.target.value)} placeholder="0x... (arbitrary length hex)" className="mt-1 block w-full input-style text-black" />
         </div>
         <div>
           <label htmlFor="kycDataLocation" className="block text-sm font-medium text-black">KYC Data Location (e.g., IPFS CID):</label>
           <input type="text" id="kycDataLocation" value={kycDataLocation} onChange={(e) => setKycDataLocation(e.target.value)} placeholder="ipfs://..." className="mt-1 block w-full input-style text-black" />
         </div>
-        <button onClick={handleSubmitKyc} disabled={isWritePending || isConfirming} className="button-style bg-purple-500 hover:bg-purple-600">Submit KYC</button>
+        <button 
+            onClick={handleSubmitKyc} 
+            disabled={
+                isWritePending || 
+                isConfirming || 
+                !kycDeveloperAddress || 
+                !kycDocsHash || 
+                !kycDataLocation ||
+                !kycDeveloperAddress.startsWith('0x') || kycDeveloperAddress.length !== 42 ||
+                !kycDocsHash.startsWith('0x') // Only check for 0x prefix now for the hash
+            } 
+            className="button-style bg-purple-500 hover:bg-purple-600"
+        >
+            Submit KYC
+        </button>
       </div>
 
       {/* Set Developer KYC Verification Status */}
@@ -655,7 +678,11 @@ export function DeveloperRegistryAdmin() {
           <label htmlFor="viewKycDevAddress" className="block text-sm font-medium text-black">Developer Address:</label>
           <input type="text" id="viewKycDevAddress" value={viewKycDeveloperAddress} onChange={(e) => setViewKycDeveloperAddress(e.target.value)} placeholder="0x..." className="mt-1 block w-full input-style text-black" />
         </div>
-        <button onClick={handleViewKycInfo} disabled={isDevInfoLoading || isKycLocationLoading} className="button-style bg-cyan-500 hover:bg-cyan-600">
+        <button 
+          onClick={handleViewKycInfo} 
+          disabled={isDevInfoLoading || isKycLocationLoading || !viewKycDeveloperAddress} 
+          className="button-style bg-cyan-500 hover:bg-cyan-600"
+        >
           {isDevInfoLoading || isKycLocationLoading ? 'Loading Info...' : 'View KYC Info'}
         </button>
         {developerInfo && (

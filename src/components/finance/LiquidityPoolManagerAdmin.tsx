@@ -631,7 +631,11 @@ export function LiquidityPoolManagerAdmin() {
           <label htmlFor="viewPoolId" className="block text-sm font-medium text-black">Pool ID:</label>
           <input type="text" id="viewPoolId" value={viewPoolId} onChange={(e) => { setViewPoolId(e.target.value); setPoolInfo(null); }} placeholder="Enter Pool ID" className="mt-1 block w-full input-style text-black" />
         </div>
-        <button onClick={handleViewPoolInfo} disabled={isPoolInfoLoading || isPoolRiskLevelsLoading || isPoolAprRatesLoading} className="button-style bg-cyan-500 hover:bg-cyan-600">
+        <button 
+          onClick={handleViewPoolInfo} 
+          disabled={isPoolInfoLoading || isPoolRiskLevelsLoading || isPoolAprRatesLoading || !viewPoolId} 
+          className="button-style bg-cyan-500 hover:bg-cyan-600"
+        >
           {isPoolInfoLoading || isPoolRiskLevelsLoading || isPoolAprRatesLoading ? 'Loading Pool Info...' : 'View Pool Info'}
         </button>
         {poolInfo && (
@@ -656,7 +660,11 @@ export function LiquidityPoolManagerAdmin() {
           <label htmlFor="viewLoanProjectId" className="block text-sm font-medium text-black">Project ID for Loan:</label>
           <input type="text" id="viewLoanProjectId" value={viewLoanProjectId} onChange={(e) => { setViewLoanProjectId(e.target.value); setPoolLoanRecord(null); }} placeholder="Enter Project ID" className="mt-1 block w-full input-style text-black" />
         </div>
-        <button onClick={handleViewLoanRecord} disabled={isPoolLoanRecordLoading} className="button-style bg-cyan-500 hover:bg-cyan-600">
+        <button 
+          onClick={handleViewLoanRecord} 
+          disabled={isPoolLoanRecordLoading || !viewLoanPoolId || !viewLoanProjectId} 
+          className="button-style bg-cyan-500 hover:bg-cyan-600"
+        >
           {isPoolLoanRecordLoading ? 'Loading Loan Record...' : 'View Loan Record'}
         </button>
         {poolLoanRecord && (

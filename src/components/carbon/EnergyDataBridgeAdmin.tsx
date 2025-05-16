@@ -1,8 +1,8 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract } from 'wagmi';
-import { Address, toBytes } from 'viem';
+import { Address, toBytes, bytesToHex, Hex } from 'viem';
 import energyDataBridgeAbiJson from '@/abis/EnergyDataBridge.json';
 
 const ENERGY_DATA_BRIDGE_ADDRESS = process.env.NEXT_PUBLIC_ENERGY_DATA_BRIDGE_ADDRESS as Address | undefined;
@@ -99,12 +99,34 @@ export function EnergyDataBridgeAdmin() {
     functionName: 'getPeerIdCount',
   });
 
+  const memoizedRegisteredNodeArgs = useMemo<[`0x${string}`] | undefined>(() => {
+    if (!queryNodePeerId) return undefined;
+    try {
+        if (queryNodePeerId.startsWith('0x')) {
+            if (queryNodePeerId.length === 66 && /^0x[0-9a-fA-F]{64}$/.test(queryNodePeerId)) {
+                return [queryNodePeerId as `0x${string}`];
+            }
+            // Invalid hex, causes args to be undefined
+            return undefined; 
+        } else {
+            // For non-hex, attempt conversion. toBytes will throw for invalid/too long.
+            const bytes = toBytes(queryNodePeerId, { size: 32 });
+            return [bytesToHex(bytes)]; // bytesToHex returns `0x${string}`
+        }
+    } catch (e) {
+        console.warn("Could not prepare registeredNodeArgs from queryNodePeerId:", queryNodePeerId, e);
+        return undefined; // Invalid format for conversion
+    }
+  }, [queryNodePeerId]);
+  
   const { data: registeredNodeData, refetch: fetchRegisteredNode, isLoading: isRegisteredNodeLoading } = useReadContract({
     address: ENERGY_DATA_BRIDGE_ADDRESS,
     abi: energyDataBridgeAbi,
     functionName: 'registeredNodes',
-    args: queryNodePeerId ? [queryNodePeerId as `0x${string}`] : undefined, // Ensure it's a bytes32 if needed
-    query: { enabled: false }
+    args: memoizedRegisteredNodeArgs, 
+    query: { 
+        enabled: false // Keep manual fetch via button
+    }
   });
 
   // --- Effects to update state from reads ---
@@ -282,9 +304,24 @@ export function EnergyDataBridgeAdmin() {
     if (!registerNodePeerId) { setStatusMessage('Please enter Peer ID.'); return; }
     if (!registerNodeOperator) { setStatusMessage('Please enter Operator address.'); return; }
     try {
-      const peerIdBytes32 = registerNodePeerId.startsWith('0x') ? registerNodePeerId as `0x${string}` : toBytes(registerNodePeerId, {size: 32});
+      let peerIdBytes32Hex: Hex;
+      if (registerNodePeerId.startsWith('0x')) {
+        if (registerNodePeerId.length !== 66) { // 0x + 64 hex chars for bytes32
+          throw new Error('Hex Peer ID must be 32 bytes long (e.g., 0x... with 64 hex characters).');
+        }
+        // Basic hex validation
+        if (!/^0x[0-9a-fA-F]{64}$/.test(registerNodePeerId)) {
+            throw new Error('Invalid characters in hex Peer ID.');
+        }
+        peerIdBytes32Hex = registerNodePeerId as Hex;
+      } else {
+        // Viem's toBytes can handle various string inputs (including base58 for peer IDs)
+        // and will throw if the input is too large for the specified size or invalid.
+        const bytesValue = toBytes(registerNodePeerId, { size: 32 });
+        peerIdBytes32Hex = bytesToHex(bytesValue); // Convert ByteArray to Hex string
+      }
       const operatorAddress = registerNodeOperator as Address;
-      handleWrite('registerNode', [peerIdBytes32, operatorAddress], 'Register node transaction submitted...');
+      handleWrite('registerNode', [peerIdBytes32Hex, operatorAddress], 'Register node transaction submitted...');
     } catch (e: unknown) {
       if (e instanceof Error) {
         setStatusMessage(`Invalid input for register node: ${e.message}`);
@@ -297,8 +334,20 @@ export function EnergyDataBridgeAdmin() {
   const handleUpdateNodeStatus = () => {
     if (!updateNodePeerId) { setStatusMessage('Please enter Peer ID.'); return; }
     try {
-      const peerIdBytes32 = updateNodePeerId.startsWith('0x') ? updateNodePeerId as `0x${string}` : toBytes(updateNodePeerId, {size: 32});
-      handleWrite('updateNodeStatus', [peerIdBytes32, updateNodeIsActive], 'Update node status transaction submitted...');
+      let peerIdBytes32Hex: Hex;
+      if (updateNodePeerId.startsWith('0x')) {
+        if (updateNodePeerId.length !== 66) {
+          throw new Error('Hex Peer ID for update must be 32 bytes long.');
+        }
+        if (!/^0x[0-9a-fA-F]{64}$/.test(updateNodePeerId)) {
+            throw new Error('Invalid characters in hex Peer ID for update.');
+        }
+        peerIdBytes32Hex = updateNodePeerId as Hex;
+      } else {
+        const bytesValue = toBytes(updateNodePeerId, {size: 32});
+        peerIdBytes32Hex = bytesToHex(bytesValue);
+      }
+      handleWrite('updateNodeStatus', [peerIdBytes32Hex, updateNodeIsActive], 'Update node status transaction submitted...');
     } catch (e: unknown) {
       if (e instanceof Error) {
         setStatusMessage(`Invalid input for update node status: ${e.message}`);
@@ -309,9 +358,20 @@ export function EnergyDataBridgeAdmin() {
   };
 
   const handleFetchRegisteredNode = () => {
-    if (!queryNodePeerId) { setStatusMessage('Please enter a Peer ID to query.'); setQueriedNodeInfo(null); return; }
+    if (!queryNodePeerId) { 
+        setStatusMessage('Please enter a Peer ID to query.'); 
+        setQueriedNodeInfo(null); 
+        return; 
+    }
+    // The memoizedRegisteredNodeArgs will be undefined if queryNodePeerId is invalid based on the useMemo logic
+    if (!memoizedRegisteredNodeArgs) {
+        setStatusMessage('Invalid Peer ID format for query. Must be a valid bytes32 hex string or convertible string (e.g., base58).');
+        setQueriedNodeInfo(null);
+        return;
+    }
+    
     setQueriedNodeInfo(null); // Clear previous
-    fetchRegisteredNode();
+    fetchRegisteredNode(); // This will use the 'args: memoizedRegisteredNodeArgs' from the hook config.
   };
 
   // --- Transaction Status Effect ---
@@ -585,13 +645,13 @@ export function EnergyDataBridgeAdmin() {
               id="queryNodePeerIdEDB"
               value={queryNodePeerId}
               onChange={(e) => { setQueryNodePeerId(e.target.value); setQueriedNodeInfo(null);}}
-              placeholder="e.g., 0x... or my_peer_id_string"
+              placeholder="e.g., 0x... or 12D3Koo..."
               className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black placeholder-gray-500"
             />
           </div>
           <button
             onClick={handleFetchRegisteredNode}
-            disabled={isRegisteredNodeLoading || !queryNodePeerId}
+            disabled={isRegisteredNodeLoading || !queryNodePeerId || !memoizedRegisteredNodeArgs}
             className="px-4 py-2 bg-teal-500 text-white rounded hover:bg-teal-600 disabled:bg-gray-400 disabled:text-gray-600 disabled:cursor-not-allowed"
           >
             {isRegisteredNodeLoading ? 'Fetching...' : 'Get Node Info'}

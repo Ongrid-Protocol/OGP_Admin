@@ -639,7 +639,11 @@ export function DeveloperDepositEscrowAdmin() {
           <label htmlFor="viewDepositProjectId" className="block text-sm font-medium text-black">Project ID:</label>
           <input type="text" id="viewDepositProjectId" value={viewDepositProjectId} onChange={(e) => { setViewDepositProjectId(e.target.value); setDepositInfo(null); }} placeholder="Enter Project ID (uint256)" className="mt-1 block w-full input-style text-black" />
         </div>
-        <button onClick={handleViewDepositStatus} disabled={isDepositAmountLoading || isProjectDeveloperLoading || isDepositSettledLoading} className="button-style bg-sky-500 hover:bg-sky-600">
+        <button 
+          onClick={handleViewDepositStatus} 
+          disabled={isDepositAmountLoading || isProjectDeveloperLoading || isDepositSettledLoading || !viewDepositProjectId} 
+          className="button-style bg-sky-500 hover:bg-sky-600"
+        >
           {isDepositAmountLoading || isProjectDeveloperLoading || isDepositSettledLoading ? 'Loading Status...' : 'View Deposit Status'}
         </button>
         {depositInfo && (
