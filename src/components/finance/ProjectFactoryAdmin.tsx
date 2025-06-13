@@ -9,23 +9,22 @@ import constantsAbiJson from '@/abis/Constants.json';
 type RoleGrantedEventArgs = { role: Hex; account: Address; sender: Address; };
 type RoleRevokedEventArgs = { role: Hex; account: Address; sender: Address; };
 type AddressesSetEventArgs = {
-    liquidityPoolManager: Address;
-    vaultImplementation: Address;
-    devEscrowImplementation: Address;
+    poolManager: Address;
+    vaultImpl: Address;
+    escrowImpl: Address;
     repaymentRouter: Address;
+    pauser: Address;
+    admin: Address;
+    riskOracleAdapter: Address;
     feeRouter: Address;
-    riskRateOracleAdapter: Address;
-    pauserAdminForClones: Address;
-    adminForVaultClones: Address;
-    protocolTreasury: Address;
-    // Add other fields from the event if necessary
 };
 
 type ProjectCreatedEventArgs = { 
-  projectId: Hex; // bytes32
-  projectAddress: Address; 
+  projectId: bigint; 
+  vaultAddress: Address; 
   developer: Address; 
-  // Add other fields from the event as necessary
+  devEscrowAddress: Address;
+  loanAmount: bigint;
 };
 
 const PROJECT_FACTORY_ADDRESS = process.env.NEXT_PUBLIC_PROJECT_FACTORY_ADDRESS as Address | undefined;
@@ -59,21 +58,19 @@ export function ProjectFactoryAdmin() {
   const { isLoading: isConfirming, isSuccess: isConfirmed, error: receiptError } = useWaitForTransactionReceipt({ hash: writeHash });
 
   const [isPaused, setIsPaused] = useState<boolean | null>(null);
-  const [developerRegistry, setDeveloperRegistry] = useState<Address | null>(null);
-  const [protocolTreasury, setProtocolTreasury] = useState<Address | null>(null);
-  const [newDeveloperRegistry, setNewDeveloperRegistry] = useState<string>('');
-  const [newProtocolTreasury, setNewProtocolTreasury] = useState<string>('');
 
-  // State for setAddresses function
+  // State for dependency addresses read from the contract
+  const [dependencies, setDependencies] = useState<Record<string, Address | string | null>>({});
+
+  // State for setAddresses function inputs
   const [saLPM, setSaLPM] = useState<string>('');
   const [saVaultImpl, setSaVaultImpl] = useState<string>('');
   const [saDevEscrowImpl, setSaDevEscrowImpl] = useState<string>('');
   const [saRepaymentRouter, setSaRepaymentRouter] = useState<string>('');
   const [saFeeRouter, setSaFeeRouter] = useState<string>('');
   const [saRiskOracleAdapter, setSaRiskOracleAdapter] = useState<string>('');
-  const [saPauserAdminClones, setSaPauserAdminClones] = useState<string>('');
-  const [saAdminVaultClones, setSaAdminVaultClones] = useState<string>('');
-  const [saProtocolTreasury, setSaProtocolTreasury] = useState<string>(''); // For setAddresses
+  const [saPauserAdminForClones, setSaPauserAdminForClones] = useState<string>('');
+  const [saAdminForVaultClones, setSaAdminForVaultClones] = useState<string>('');
 
   const [roleNames, setRoleNames] = useState<string[]>([]);
   const [selectedRoleName, setSelectedRoleName] = useState<string>('');
@@ -97,16 +94,19 @@ export function ProjectFactoryAdmin() {
     address: PROJECT_FACTORY_ADDRESS, abi: projectFactoryAbi, functionName: 'paused',
     query: { enabled: !!PROJECT_FACTORY_ADDRESS }
   });
-  const { data: devRegData, refetch: refetchDevReg } = useReadContract({
-    address: PROJECT_FACTORY_ADDRESS, abi: projectFactoryAbi, functionName: 'developerRegistry',
-    query: { enabled: !!PROJECT_FACTORY_ADDRESS }
-  });
-  const { data: protoTreasuryData, refetch: refetchProtoTreasury } = useReadContract({
-    address: PROJECT_FACTORY_ADDRESS, abi: projectFactoryAbi, functionName: 'protocolTreasury',
-    query: { enabled: !!PROJECT_FACTORY_ADDRESS }
-  });
 
-  // --- HasRole Read Hook (on demand) ---
+  // --- Read all dependency addresses ---
+  const { data: lpmAddr, refetch: refetchLpm } = useReadContract({ address: PROJECT_FACTORY_ADDRESS, abi: projectFactoryAbi, functionName: 'liquidityPoolManager' });
+  const { data: vaultImplAddr, refetch: refetchVaultImpl } = useReadContract({ address: PROJECT_FACTORY_ADDRESS, abi: projectFactoryAbi, functionName: 'vaultImplementation' });
+  const { data: devEscrowImplAddr, refetch: refetchDevEscrowImpl } = useReadContract({ address: PROJECT_FACTORY_ADDRESS, abi: projectFactoryAbi, functionName: 'devEscrowImplementation' });
+  const { data: repaymentRouterAddr, refetch: refetchRepaymentRouter } = useReadContract({ address: PROJECT_FACTORY_ADDRESS, abi: projectFactoryAbi, functionName: 'repaymentRouterAddress' });
+  const { data: feeRouterAddr, refetch: refetchFeeRouter } = useReadContract({ address: PROJECT_FACTORY_ADDRESS, abi: projectFactoryAbi, functionName: 'feeRouter' });
+  const { data: riskOracleAddr, refetch: refetchRiskOracle } = useReadContract({ address: PROJECT_FACTORY_ADDRESS, abi: projectFactoryAbi, functionName: 'riskOracleAdapterAddress' });
+  const { data: pauserAddr, refetch: refetchPauser } = useReadContract({ address: PROJECT_FACTORY_ADDRESS, abi: projectFactoryAbi, functionName: 'pauserAddress' });
+  const { data: adminAddr, refetch: refetchAdmin } = useReadContract({ address: PROJECT_FACTORY_ADDRESS, abi: projectFactoryAbi, functionName: 'adminAddress' });
+  const { data: depositEscrowAddr, refetch: refetchDepositEscrow } = useReadContract({ address: PROJECT_FACTORY_ADDRESS, abi: projectFactoryAbi, functionName: 'depositEscrow' });
+  const { data: devRegAddr, refetch: refetchDevReg } = useReadContract({ address: PROJECT_FACTORY_ADDRESS, abi: projectFactoryAbi, functionName: 'developerRegistry' });
+
   const { data: hasRoleData, refetch: fetchHasRole, isLoading: isHasRoleLoading, error: hasRoleError } = useReadContract({
     address: PROJECT_FACTORY_ADDRESS,
     abi: projectFactoryAbi,
@@ -118,8 +118,21 @@ export function ProjectFactoryAdmin() {
   });
 
   useEffect(() => { if (pausedData !== undefined) setIsPaused(pausedData as boolean); }, [pausedData]);
-  useEffect(() => { if (devRegData) setDeveloperRegistry(devRegData as Address); }, [devRegData]);
-  useEffect(() => { if (protoTreasuryData) setProtocolTreasury(protoTreasuryData as Address); }, [protoTreasuryData]);
+
+  useEffect(() => {
+    setDependencies({
+      liquidityPoolManager: lpmAddr as Address,
+      vaultImplementation: vaultImplAddr as Address,
+      devEscrowImplementation: devEscrowImplAddr as Address,
+      repaymentRouterAddress: repaymentRouterAddr as Address,
+      feeRouter: feeRouterAddr as Address,
+      riskOracleAdapterAddress: riskOracleAddr as Address,
+      pauserAddress: pauserAddr as Address,
+      adminAddress: adminAddr as Address,
+      depositEscrow: depositEscrowAddr as Address,
+      developerRegistry: devRegAddr as Address,
+    });
+  }, [lpmAddr, vaultImplAddr, devEscrowImplAddr, repaymentRouterAddr, feeRouterAddr, riskOracleAddr, pauserAddr, adminAddr, depositEscrowAddr, devRegAddr]);
   
   useEffect(() => { 
     const names = getRoleNamesFromAbi(constantsAbi);
@@ -177,7 +190,7 @@ export function ProjectFactoryAdmin() {
         } catch (e: unknown) { console.error("Error decoding RoleGranted:", e); setStatusMessage("Error processing RoleGranted event."); }
       });
     },
-    onError: (error) => { console.error('Error watching RoleGranted event:', error); setStatusMessage(`Error watching RoleGranted event: ${error.message}`);}
+    onError: (error) => { console.error('Error watching RoleGranted event:', error); setStatusMessage(`Error watching RoleGranted event: ${error.message}`); }
   });
 
   useWatchContractEvent({
@@ -193,7 +206,7 @@ export function ProjectFactoryAdmin() {
         } catch (e: unknown) { console.error("Error decoding RoleRevoked:", e); setStatusMessage("Error processing RoleRevoked event."); }
       });
     },
-    onError: (error) => { console.error('Error watching RoleRevoked event:', error); setStatusMessage(`Error watching RoleRevoked event: ${error.message}`);}
+    onError: (error) => { console.error('Error watching RoleRevoked event:', error); setStatusMessage(`Error watching RoleRevoked event: ${error.message}`); }
   });
 
   useWatchContractEvent({
@@ -204,7 +217,7 @@ export function ProjectFactoryAdmin() {
           const decoded = decodeEventLog({ abi: projectFactoryAbi, data: log.data, topics: log.topics, eventName: 'ProjectCreated' });
           const args = decoded.args as unknown as ProjectCreatedEventArgs;
           setProjectEvents(prev => [...prev, args]);
-          setStatusMessage(`Event: ProjectCreated ${args.projectId.substring(0,10)}...`);
+          setStatusMessage(`Event: ProjectCreated ${args.projectId.toString()}`);
         } catch (e: unknown) { console.error("Error decoding ProjectCreated:", e); setStatusMessage("Error processing event."); }
       });
     }
@@ -218,7 +231,7 @@ export function ProjectFactoryAdmin() {
           const decoded = decodeEventLog({ abi: projectFactoryAbi, data: log.data, topics: log.topics, eventName: 'AddressesSet' });
           const args = decoded.args as unknown as AddressesSetEventArgs;
           setAddressesSetEvents(prev => [...prev, args]);
-          setStatusMessage(`Event: AddressesSet - LiquidityPoolManager: ${args.liquidityPoolManager?.substring(0,10)}...`);
+          setStatusMessage(`Event: AddressesSet - LPM: ${args.poolManager?.substring(0,10)}...`);
         } catch (e: unknown) { console.error("Error decoding AddressesSet:", e); setStatusMessage("Error processing AddressesSet event."); }
       });
     }
@@ -238,8 +251,16 @@ export function ProjectFactoryAdmin() {
   const refetchAll = useCallback(() => { 
     refetchPaused(); 
     refetchDevReg(); 
-    refetchProtoTreasury(); 
-  }, [refetchPaused, refetchDevReg, refetchProtoTreasury]);
+    refetchLpm();
+    refetchVaultImpl();
+    refetchDevEscrowImpl();
+    refetchRepaymentRouter();
+    refetchFeeRouter();
+    refetchRiskOracle();
+    refetchPauser();
+    refetchAdmin();
+    refetchDepositEscrow();
+  }, [refetchPaused, refetchDevReg, refetchLpm, refetchVaultImpl, refetchDevEscrowImpl, refetchRepaymentRouter, refetchFeeRouter, refetchRiskOracle, refetchPauser, refetchAdmin, refetchDepositEscrow]);
 
   const handleWrite = (functionName: string, args: unknown[], successMsg?: string) => {
     if (!PROJECT_FACTORY_ADDRESS) { setStatusMessage('Contract address not set'); return; }
@@ -269,19 +290,11 @@ export function ProjectFactoryAdmin() {
 
   const handlePause = () => handleWrite('pause', [], 'Pausing contract...');
   const handleUnpause = () => handleWrite('unpause', [], 'Unpausing contract...');
-  const handleSetDeveloperRegistry = () => {
-    if (!newDeveloperRegistry) {setStatusMessage('New address missing'); return;}
-    handleWrite('setDeveloperRegistry', [newDeveloperRegistry as Address], 'Setting Developer Registry...');
-  };
-  const handleSetProtocolTreasury = () => {
-    if (!newProtocolTreasury) {setStatusMessage('New address missing'); return;}
-    handleWrite('setProtocolTreasury', [newProtocolTreasury as Address], 'Setting Protocol Treasury...');
-  };
 
   const handleSetAddresses = () => {
     // Validate all addresses are provided
-    if (!saLPM || !saVaultImpl || !saDevEscrowImpl || !saRepaymentRouter || !saFeeRouter || !saRiskOracleAdapter || !saPauserAdminClones || !saAdminVaultClones || !saProtocolTreasury) {
-        setStatusMessage('All addresses for setAddresses must be provided.');
+    if (!saLPM || !saVaultImpl || !saDevEscrowImpl || !saRepaymentRouter || !saFeeRouter || !saRiskOracleAdapter || !saPauserAdminForClones || !saAdminForVaultClones) {
+        setStatusMessage('All 8 addresses for setAddresses must be provided.');
         return;
     }
     try {
@@ -290,11 +303,10 @@ export function ProjectFactoryAdmin() {
             saVaultImpl as Address,
             saDevEscrowImpl as Address,
             saRepaymentRouter as Address,
-            saFeeRouter as Address,
+            saPauserAdminForClones as Address, // Corresponds to _pauser in ABI
+            saAdminForVaultClones as Address, // Corresponds to _admin in ABI
             saRiskOracleAdapter as Address,
-            saPauserAdminClones as Address,
-            saAdminVaultClones as Address,
-            saProtocolTreasury as Address
+            saFeeRouter as Address
         ];
         handleWrite('setAddresses', args, 'Setting all core addresses via setAddresses...');
     } catch (e: unknown) {
@@ -321,28 +333,19 @@ export function ProjectFactoryAdmin() {
       <div className="p-4 border rounded bg-gray-50">
         <h3 className="text-xl font-medium text-black mb-2">Contract Status & Config</h3>
         <p className="text-black"><strong>Paused:</strong> {isPaused === null ? 'Loading...' : isPaused ? 'Yes' : 'No'}</p>
-        <p className="text-black"><strong>Developer Registry:</strong> {developerRegistry || 'Loading...'}</p>
-        <p className="text-black"><strong>Protocol Treasury:</strong> {protocolTreasury || 'Loading...'}</p>
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-x-4 text-sm font-mono mt-2">
+            {Object.entries(dependencies).map(([key, value]) => (
+                <div key={key} className="truncate">
+                    <span className="font-semibold">{key}:</span> {value || 'Not Set'}
+                </div>
+            ))}
+        </div>
         <button onClick={refetchAll} className="mt-2 px-3 py-1 text-sm bg-blue-500 text-white rounded hover:bg-blue-600">Refresh Data</button>
       </div>
 
       <div className="space-y-4 p-4 border rounded bg-gray-50">
-        <h3 className="text-xl font-medium text-black">Set Developer Registry</h3>
-        <p className="text-sm text-gray-700">Requires DEFAULT_ADMIN_ROLE.</p>
-        <input type="text" value={newDeveloperRegistry} onChange={(e) => setNewDeveloperRegistry(e.target.value)} placeholder="New Developer Registry Address" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black placeholder-gray-500" />
-        <button onClick={handleSetDeveloperRegistry} disabled={isWritePending || isConfirming || !newDeveloperRegistry} className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-gray-400">Set Developer Registry</button>
-      </div>
-
-      <div className="space-y-4 p-4 border rounded bg-gray-50">
-        <h3 className="text-xl font-medium text-black">Set Protocol Treasury</h3>
-        <p className="text-sm text-gray-700">Requires DEFAULT_ADMIN_ROLE.</p>
-        <input type="text" value={newProtocolTreasury} onChange={(e) => setNewProtocolTreasury(e.target.value)} placeholder="New Protocol Treasury Address" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black placeholder-gray-500" />
-        <button onClick={handleSetProtocolTreasury} disabled={isWritePending || isConfirming || !newProtocolTreasury} className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-gray-400">Set Protocol Treasury</button>
-      </div>
-
-      <div className="space-y-4 p-4 border rounded bg-gray-50">
-        <h3 className="text-xl font-medium text-black">Grant Role</h3>
-        <p className="text-sm text-gray-700">Grant roles like PAUSER_ROLE, CREATOR_ROLE. Requires DEFAULT_ADMIN_ROLE or specific role admin.</p>
+        <h3 className="text-xl font-medium text-black">Grant/Revoke Role</h3>
+        <p className="text-sm text-gray-700">Grant roles like PAUSER_ROLE, etc. Requires DEFAULT_ADMIN_ROLE.</p>
         <div>
             <label htmlFor="roleSelectPF" className="block text-sm font-medium text-black">Select Role:</label>
             <select id="roleSelectPF" value={selectedRoleName} onChange={(e) => setSelectedRoleName(e.target.value)} className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black">
@@ -422,23 +425,22 @@ export function ProjectFactoryAdmin() {
       
       <div className="p-4 border rounded bg-gray-100">
           <h3 className="text-xl font-medium text-black">Other Admin Functions</h3>
-          <p className="italic text-gray-700">Placeholder for `createProject`. This usually requires developer input for project details and is not typically an admin-only function without parameters.</p>
+          <p className="italic text-gray-700">The `createProject` function is intended to be called by developers through the main application UI, not typically from this admin panel.</p>
       </div>
 
       {/* Comprehensive setAddresses */}
       <div className="space-y-4 p-4 border rounded bg-gray-50">
         <h3 className="text-xl font-medium text-black">Configure Core Addresses (setAddresses)</h3>
-        <p className="text-sm text-gray-700">Requires DEFAULT_ADMIN_ROLE. Sets all linked contract addresses and admin/pauser for clones.</p>
+        <p className="text-sm text-gray-700">Requires DEFAULT_ADMIN_ROLE. Sets all linked contract addresses and default roles for clones. This is a critical one-time setup step.</p>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div><label>Liquidity Pool Manager:</label><input type="text" value={saLPM} onChange={e => setSaLPM(e.target.value)} placeholder="0x..." className="input-style text-black" /></div>
-            <div><label>Vault Implementation:</label><input type="text" value={saVaultImpl} onChange={e => setSaVaultImpl(e.target.value)} placeholder="0x..." className="input-style text-black" /></div>
-            <div><label>DevEscrow Implementation:</label><input type="text" value={saDevEscrowImpl} onChange={e => setSaDevEscrowImpl(e.target.value)} placeholder="0x..." className="input-style text-black" /></div>
-            <div><label>Repayment Router:</label><input type="text" value={saRepaymentRouter} onChange={e => setSaRepaymentRouter(e.target.value)} placeholder="0x..." className="input-style text-black" /></div>
-            <div><label>Fee Router:</label><input type="text" value={saFeeRouter} onChange={e => setSaFeeRouter(e.target.value)} placeholder="0x..." className="input-style text-black" /></div>
-            <div><label>Risk Rate Oracle Adapter:</label><input type="text" value={saRiskOracleAdapter} onChange={e => setSaRiskOracleAdapter(e.target.value)} placeholder="0x..." className="input-style text-black" /></div>
-            <div><label>Pauser Admin for Clones:</label><input type="text" value={saPauserAdminClones} onChange={e => setSaPauserAdminClones(e.target.value)} placeholder="0x..." className="input-style text-black" /></div>
-            <div><label>Admin for Vault Clones:</label><input type="text" value={saAdminVaultClones} onChange={e => setSaAdminVaultClones(e.target.value)} placeholder="0x..." className="input-style text-black" /></div>
-            <div><label>Protocol Treasury (for setAddresses):</label><input type="text" value={saProtocolTreasury} onChange={e => setSaProtocolTreasury(e.target.value)} placeholder="0x..." className="input-style text-black" /></div>
+            <div><label>Liquidity Pool Manager (_poolManager):</label><input type="text" value={saLPM} onChange={e => setSaLPM(e.target.value)} placeholder="0x..." className="input-style text-black" /></div>
+            <div><label>Vault Implementation (_vaultImpl):</label><input type="text" value={saVaultImpl} onChange={e => setSaVaultImpl(e.target.value)} placeholder="0x..." className="input-style text-black" /></div>
+            <div><label>DevEscrow Implementation (_escrowImpl):</label><input type="text" value={saDevEscrowImpl} onChange={e => setSaDevEscrowImpl(e.target.value)} placeholder="0x..." className="input-style text-black" /></div>
+            <div><label>Repayment Router (_repaymentRouter):</label><input type="text" value={saRepaymentRouter} onChange={e => setSaRepaymentRouter(e.target.value)} placeholder="0x..." className="input-style text-black" /></div>
+            <div><label>Pauser for Clones (_pauser):</label><input type="text" value={saPauserAdminForClones} onChange={e => setSaPauserAdminForClones(e.target.value)} placeholder="0x..." className="input-style text-black" /></div>
+            <div><label>Admin for Vault Clones (_admin):</label><input type="text" value={saAdminForVaultClones} onChange={e => setSaAdminForVaultClones(e.target.value)} placeholder="0x..." className="input-style text-black" /></div>
+            <div><label>Risk Rate Oracle Adapter (_riskOracleAdapter):</label><input type="text" value={saRiskOracleAdapter} onChange={e => setSaRiskOracleAdapter(e.target.value)} placeholder="0x..." className="input-style text-black" /></div>
+            <div><label>Fee Router (_feeRouter):</label><input type="text" value={saFeeRouter} onChange={e => setSaFeeRouter(e.target.value)} placeholder="0x..." className="input-style text-black" /></div>
         </div>
         <button onClick={handleSetAddresses} disabled={isWritePending || isConfirming} className="button-style bg-green-600 hover:bg-green-700">Set All Addresses</button>
       </div>
@@ -477,9 +479,11 @@ export function ProjectFactoryAdmin() {
                 <ul className="space-y-3">
                 {projectEvents.slice(-3).reverse().map((event, index) => (
                     <li key={`project-${index}`} className="p-3 bg-white border border-gray-200 rounded shadow-sm">
-                    <p className="text-sm text-black"><strong>Project ID:</strong> {event.projectId.substring(0,10)}...</p>
-                    <p className="text-sm text-black"><strong>Project Address:</strong> {event.projectAddress}</p>
+                    <p className="text-sm text-black"><strong>Project ID:</strong> {event.projectId.toString()}</p>
+                    <p className="text-sm text-black"><strong>Vault Address:</strong> {event.vaultAddress}</p>
+                    <p className="text-sm text-black"><strong>Dev Escrow Address:</strong> {event.devEscrowAddress}</p>
                     <p className="text-sm text-black"><strong>Developer:</strong> {event.developer}</p>
+                    <p className="text-sm text-black"><strong>Loan Amount:</strong> {event.loanAmount.toString()}</p>
                     </li>
                 ))}
                 </ul>
@@ -492,10 +496,14 @@ export function ProjectFactoryAdmin() {
                 {addressesSetEvents.slice(-3).reverse().map((event, index) => (
                     <li key={`addressesSet-${index}`} className="p-3 bg-green-50 border-green-200 rounded shadow-sm text-xs">
                         <p><strong>Event: AddressesSet</strong></p>
-                        <p>LPM: {event.liquidityPoolManager}</p>
-                        <p>VaultImpl: {event.vaultImplementation}</p>
-                        <p>DevEscrowImpl: {event.devEscrowImplementation}</p>
-                        {/* Add other addresses as needed */}
+                        <p>LPM: {event.poolManager}</p>
+                        <p>VaultImpl: {event.vaultImpl}</p>
+                        <p>EscrowImpl: {event.escrowImpl}</p>
+                        <p>RepayRouter: {event.repaymentRouter}</p>
+                        <p>Pauser: {event.pauser}</p>
+                        <p>Admin: {event.admin}</p>
+                        <p>RiskAdapter: {event.riskOracleAdapter}</p>
+                        <p>FeeRouter: {event.feeRouter}</p>
                     </li>
                 ))}
                 </ul>

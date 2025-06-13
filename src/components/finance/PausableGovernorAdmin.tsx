@@ -9,10 +9,10 @@ import constantsAbiJson from '@/abis/Constants.json';
 // Event Argument Types
 type RoleGrantedEventArgs = { role: Hex; account: Address; sender: Address; };
 type RoleRevokedEventArgs = { role: Hex; account: Address; sender: Address; };
-type PausedTargetEventArgs = { target: Address; caller: Address; }; // Adjusted based on typical PausableGovernor events
-type UnpausedTargetEventArgs = { target: Address; caller: Address; }; // Adjusted based on typical PausableGovernor events
-type PausableContractAddedEventArgs = { target: Address; caller: Address; }; // caller usually emits these
-type PausableContractRemovedEventArgs = { target: Address; caller: Address; };
+type PausedTargetEventArgs = { target: Address; pauser: Address; };
+type UnpausedTargetEventArgs = { target: Address; unpauser: Address; };
+type PausableContractAddedEventArgs = { target: Address; admin: Address; };
+type PausableContractRemovedEventArgs = { target: Address; admin: Address; };
 
 
 const PAUSABLE_GOVERNOR_ADDRESS = process.env.NEXT_PUBLIC_PAUSABLE_GOVERNOR_ADDRESS as Address | undefined;
@@ -153,14 +153,14 @@ export function PausableGovernorAdmin() {
   useWatchContractEvent({
       address: PAUSABLE_GOVERNOR_ADDRESS,
       abi: pausableGovernorAbi,
-      eventName: 'Paused', // This is likely the event name for pausing a specific target
+      eventName: 'Paused',
       onLogs(logs) {
           logs.forEach(log => {
             try {
                 const decoded = decodeEventLog({ abi: pausableGovernorAbi, data: log.data, topics: log.topics, eventName: 'Paused'});
                 const args = decoded.args as unknown as PausedTargetEventArgs; 
                 setGovernorEvents(prev => [...prev, { ...args, eventName: 'Paused' as const}]);
-                setStatusMessage(`Paused Event: Target ${args.target} by ${args.caller}`);
+                setStatusMessage(`Paused Event: Target ${args.target} by ${args.pauser}`);
             } catch(e: unknown) { console.error("Error decoding Paused event:", e); }
           });
       }
@@ -168,14 +168,14 @@ export function PausableGovernorAdmin() {
     useWatchContractEvent({
       address: PAUSABLE_GOVERNOR_ADDRESS,
       abi: pausableGovernorAbi,
-      eventName: 'Unpaused', // This is likely the event name for unpausing a specific target
+      eventName: 'Unpaused',
       onLogs(logs) {
           logs.forEach(log => {
             try {
                 const decoded = decodeEventLog({ abi: pausableGovernorAbi, data: log.data, topics: log.topics, eventName: 'Unpaused'});
                 const args = decoded.args as unknown as UnpausedTargetEventArgs; 
                 setGovernorEvents(prev => [...prev, { ...args, eventName: 'Unpaused' as const}]);
-                setStatusMessage(`Unpaused Event: Target ${args.target} by ${args.caller}`);
+                setStatusMessage(`Unpaused Event: Target ${args.target} by ${args.unpauser}`);
             } catch(e: unknown) { console.error("Error decoding Unpaused event:", e); }
           });
       }
@@ -190,7 +190,7 @@ export function PausableGovernorAdmin() {
                 const decoded = decodeEventLog({ abi: pausableGovernorAbi, data: log.data, topics: log.topics, eventName: 'PausableContractAdded'});
                 const args = decoded.args as unknown as PausableContractAddedEventArgs;
                 setGovernorEvents(prev => [...prev, { ...args, eventName: 'PausableContractAdded' as const}]);
-                setStatusMessage(`PausableContractAdded Event: Target ${args.target} by ${args.caller}`);
+                setStatusMessage(`PausableContractAdded Event: Target ${args.target} by ${args.admin}`);
                 setManagedContracts(prev => [...prev, args.target]);
             } catch(e: unknown) { console.error("Error decoding PausableContractAdded event:", e); }
           });
@@ -206,7 +206,7 @@ export function PausableGovernorAdmin() {
                 const decoded = decodeEventLog({ abi: pausableGovernorAbi, data: log.data, topics: log.topics, eventName: 'PausableContractRemoved'});
                 const args = decoded.args as unknown as PausableContractRemovedEventArgs;
                 setGovernorEvents(prev => [...prev, { ...args, eventName: 'PausableContractRemoved' as const}]);
-                setStatusMessage(`PausableContractRemoved Event: Target ${args.target} by ${args.caller}`);
+                setStatusMessage(`PausableContractRemoved Event: Target ${args.target} by ${args.admin}`);
                 setManagedContracts(prev => prev.filter(addr => addr.toLowerCase() !== args.target.toLowerCase()));
             } catch(e: unknown) { console.error("Error decoding PausableContractRemoved event:", e); }
           });
@@ -387,9 +387,14 @@ export function PausableGovernorAdmin() {
           <h3 className="text-lg font-medium text-black mb-2">Recent Governor Action Events</h3>
           {governorEvents.length === 0 && <p className="text-xs text-gray-500">No governor action events.</p>}
           <ul className="text-xs space-y-1">
-            {governorEvents.slice(-5).reverse().map((event, i) => (
-                <li key={`gov-${i}`}>{`${event.eventName}: Target ${event.target || "N/A"}, Caller: ${event.caller || "N/A" }`}</li>
-            ))}
+            {governorEvents.slice(-5).reverse().map((event, i) => {
+                let details = `Target: ${event.target}`;
+                if ('pauser' in event) details += `, Pauser: ${event.pauser}`;
+                if ('unpauser' in event) details += `, Unpauser: ${event.unpauser}`;
+                if ('admin' in event) details += `, Admin: ${event.admin}`;
+
+                return (<li key={`gov-${i}`}>{`${event.eventName}: ${details}`}</li>);
+            })}
           </ul>
         </div>
       </div>

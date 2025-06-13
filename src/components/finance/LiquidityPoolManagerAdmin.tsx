@@ -25,20 +25,12 @@ type PoolCreatedEventArgs = {
   creator: Address;
 };
 
-type PoolRiskLevelSetEventArgs = {
-    poolId: bigint;
-    riskLevel: number; // uint16
-    baseAprBps: number; // uint16
-    eventName?: 'PoolRiskLevelSet' | 'PoolConfigUpdated'; 
-};
-
 type LoanDefaultedEventArgs = {
   poolId: bigint;
   projectId: bigint;
   developer: Address;
-  amountDefaulted: bigint;
-  amountSlashed: bigint;
-  remainingPoolAssets: bigint;
+  writeOffAmount: bigint;
+  totalOutstandingAtDefault: bigint;
 };
 
 const LIQUIDITY_POOL_MANAGER_ADDRESS = process.env.NEXT_PUBLIC_LIQUIDITY_POOL_MANAGER_ADDRESS as Address | undefined;
@@ -84,9 +76,8 @@ export function LiquidityPoolManagerAdmin() {
   const [revokeRoleFromAddress, setRevokeRoleFromAddress] = useState<string>('');
   const [roleEvents, setRoleEvents] = useState<(RoleGrantedEventArgs | RoleRevokedEventArgs)[]>([]);
   const [poolManagementEvents, setPoolManagementEvents] = useState<(
-      PoolCreatedEventArgs & { eventName: 'PoolCreated' } | 
-      PoolRiskLevelSetEventArgs & { eventName: 'PoolConfigUpdated' | 'PoolRiskLevelSet' } |
-      LoanDefaultedEventArgs & { eventName: 'LoanDefaulted' }
+      (PoolCreatedEventArgs & { eventName: 'PoolCreated' }) | 
+      (LoanDefaultedEventArgs & { eventName: 'LoanDefaulted' })
     )[]>([]);
   const [roleHashMap, setRoleHashMap] = useState<{ [hash: Hex]: string }>({});
   const [statusMessage, setStatusMessage] = useState<string>('');
@@ -115,14 +106,20 @@ export function LiquidityPoolManagerAdmin() {
     name?: string;
     totalAssets?: bigint;
     totalShares?: bigint;
-    riskLevel?: string;
-    baseAprBps?: string;
+    riskLevel?: number; // uint16 in contract
+    baseAprBps?: number; // uint16 in contract
   } | null>(null);
   const [poolLoanRecord, setPoolLoanRecord] = useState<{
-    isActive?: boolean;
+    exists?: boolean;
+    developer?: Address;
+    devEscrow?: Address;
     principal?: bigint;
     aprBps?: number;
+    loanTenor?: bigint;
+    principalRepaid?: bigint;
+    interestAccrued?: bigint;
     startTime?: bigint;
+    isActive?: boolean;
   } | null>(null);
 
   // --- Read Hooks ---
@@ -130,6 +127,13 @@ export function LiquidityPoolManagerAdmin() {
     address: LIQUIDITY_POOL_MANAGER_ADDRESS,
     abi: liquidityPoolManagerAbi,
     functionName: 'paused',
+    query: { enabled: !!LIQUIDITY_POOL_MANAGER_ADDRESS }
+  });
+
+  const { data: protocolTreasuryAdminData, refetch: refetchTreasuryAdmin } = useReadContract({
+    address: LIQUIDITY_POOL_MANAGER_ADDRESS,
+    abi: liquidityPoolManagerAbi,
+    functionName: 'protocolTreasuryAdmin',
     query: { enabled: !!LIQUIDITY_POOL_MANAGER_ADDRESS }
   });
 
@@ -298,35 +302,6 @@ export function LiquidityPoolManagerAdmin() {
   useWatchContractEvent({
     address: LIQUIDITY_POOL_MANAGER_ADDRESS,
     abi: liquidityPoolManagerAbi,
-    eventName: 'PoolConfigUpdated',
-    onLogs(logs) {
-      logs.forEach(log => {
-        try {
-          const decoded = decodeEventLog({
-            abi: liquidityPoolManagerAbi,
-            data: log.data,
-            topics: log.topics,
-            eventName: 'PoolConfigUpdated'
-          });
-          const args = decoded.args as unknown as PoolRiskLevelSetEventArgs;
-          setPoolManagementEvents(prevEvents => [...prevEvents, { ...args, eventName: 'PoolConfigUpdated' as const }]);
-          
-          let statusDetail = `Pool ${args.poolId?.toString()} config updated.`;
-          if (args.riskLevel !== undefined) statusDetail += ` Risk Level: ${args.riskLevel.toString()}.`;
-          if (args.baseAprBps !== undefined) statusDetail += ` Base APR: ${args.baseAprBps.toString()}bps.`;
-          setStatusMessage(statusDetail);
-
-        } catch (e: unknown) {
-          console.error("Error decoding PoolConfigUpdated event:", e);
-          setStatusMessage(`Error processing PoolConfigUpdated event.`);
-        }
-      });
-    }
-  });
-
-  useWatchContractEvent({
-    address: LIQUIDITY_POOL_MANAGER_ADDRESS,
-    abi: liquidityPoolManagerAbi,
     eventName: 'LoanDefaulted',
     onLogs(logs) {
       logs.forEach(log => {
@@ -343,6 +318,7 @@ export function LiquidityPoolManagerAdmin() {
 
   const refetchAll = useCallback(() => {
     refetchPaused();
+    refetchTreasuryAdmin();
     if (viewPoolId) {
         fetchPoolInfo();
         fetchPoolRiskLevels();
@@ -351,7 +327,7 @@ export function LiquidityPoolManagerAdmin() {
     if (viewLoanPoolId && viewLoanProjectId) {
         fetchPoolLoanRecord();
     }
-  }, [refetchPaused, viewPoolId, fetchPoolInfo, fetchPoolRiskLevels, fetchPoolAprRates, viewLoanPoolId, viewLoanProjectId, fetchPoolLoanRecord]);
+  }, [refetchPaused, viewPoolId, fetchPoolInfo, fetchPoolRiskLevels, fetchPoolAprRates, viewLoanPoolId, viewLoanProjectId, fetchPoolLoanRecord, refetchTreasuryAdmin]);
 
   const handleWrite = (functionName: string, args: unknown[], successMessage?: string) => {
     if (!LIQUIDITY_POOL_MANAGER_ADDRESS) { setStatusMessage('Liquidity Pool Manager address not set'); return; }
@@ -465,11 +441,11 @@ export function LiquidityPoolManagerAdmin() {
   // Aggregate and display Pool Info
   useEffect(() => {
     if (poolInfoData != null && poolRiskLevelsData != null && poolAprRatesData != null) {
-        const info = poolInfoData as { exists: boolean, name: string, totalAssets: bigint, totalShares: bigint /* ... other fields */ };
+        const info = poolInfoData as { exists: boolean, name: string, totalAssets: bigint, totalShares: bigint };
         setPoolInfo({
-            ...info, 
-            riskLevel: (poolRiskLevelsData as bigint | number)?.toString(),
-            baseAprBps: (poolAprRatesData as bigint | number)?.toString(),
+            ...info,
+            riskLevel: Number(poolRiskLevelsData),
+            baseAprBps: Number(poolAprRatesData),
         });
     } else {
         setPoolInfo(null);
@@ -479,7 +455,7 @@ export function LiquidityPoolManagerAdmin() {
   // Display Pool Loan Record
   useEffect(() => {
     if (poolLoanRecordData) {
-        setPoolLoanRecord(poolLoanRecordData as typeof poolLoanRecord);
+        setPoolLoanRecord(poolLoanRecordData as unknown as typeof poolLoanRecord);
     } else {
         setPoolLoanRecord(null);
     }
@@ -496,6 +472,7 @@ export function LiquidityPoolManagerAdmin() {
       <div className="p-4 border rounded bg-gray-50">
         <h3 className="text-xl font-medium text-black mb-2">Contract Status</h3>
         <p className="text-black"><strong>Paused:</strong> {isPaused === null ? 'Loading...' : isPaused ? 'Yes' : 'No'}</p>
+        <p className="text-black font-mono"><strong>Protocol Treasury Admin:</strong> {protocolTreasuryAdminData?.toString() ?? 'Loading...'}</p>
         <button onClick={refetchAll} className="mt-2 px-3 py-1 text-sm bg-blue-500 text-white rounded hover:bg-blue-600">Refresh Data</button>
       </div>
       
@@ -645,8 +622,8 @@ export function LiquidityPoolManagerAdmin() {
             <p className="text-black">Name: {poolInfo.name}</p>
             <p className="text-black">Total Assets: {poolInfo.totalAssets?.toString()}</p>
             <p className="text-black">Total Shares: {poolInfo.totalShares?.toString()}</p>
-            <p className="text-black">Risk Level: {poolInfo.riskLevel}</p>
-            <p className="text-black">Base APR (BPS): {poolInfo.baseAprBps}</p>
+            <p className="text-black">Risk Level: {poolInfo.riskLevel?.toString()}</p>
+            <p className="text-black">Base APR (BPS): {poolInfo.baseAprBps?.toString()}</p>
           </div>
         )}
       </div>
@@ -670,9 +647,15 @@ export function LiquidityPoolManagerAdmin() {
         {poolLoanRecord && (
           <div className="mt-3 p-3 bg-gray-100 rounded text-sm">
             <p className="font-semibold text-black"><strong>Loan Record (Pool: {viewLoanPoolId}, Project: {viewLoanProjectId}):</strong></p>
+            <p className="text-black">Exists: {poolLoanRecord.exists?.toString()}</p>
             <p className="text-black">Is Active: {poolLoanRecord.isActive?.toString()}</p>
+            <p className="text-black">Developer: {poolLoanRecord.developer}</p>
+            <p className="text-black">Dev Escrow: {poolLoanRecord.devEscrow}</p>
             <p className="text-black">Principal: {poolLoanRecord.principal?.toString()}</p>
+            <p className="text-black">Principal Repaid: {poolLoanRecord.principalRepaid?.toString()}</p>
+            <p className="text-black">Interest Accrued: {poolLoanRecord.interestAccrued?.toString()}</p>
             <p className="text-black">APR (BPS): {poolLoanRecord.aprBps?.toString()}</p>
+            <p className="text-black">Tenor (seconds): {poolLoanRecord.loanTenor?.toString()}</p>
             <p className="text-black">Start Time: {new Date(Number(poolLoanRecord.startTime) * 1000).toLocaleString()}</p>
           </div>
         )}
@@ -720,23 +703,16 @@ export function LiquidityPoolManagerAdmin() {
                 <p className="text-black">Name: {event.name}</p>
                 <p className="text-black">Creator: {event.creator}</p>
               </>;
-            } else if (event.eventName === 'PoolConfigUpdated' || event.eventName === 'PoolRiskLevelSet') {
-                eventDetails = <>
-                    <p className="text-black"><strong>Event: {event.eventName}</strong></p>
-                    <p className="text-black">Pool ID: {event.poolId.toString()}</p>
-                    {event.riskLevel !== undefined && <p className="text-black">Risk Level: {event.riskLevel.toString()}</p>}
-                    {event.baseAprBps !== undefined && <p className="text-black">Base APR BPS: {event.baseAprBps.toString()}</p>}
-                </>;
             } else if (event.eventName === 'LoanDefaulted') {
               eventDetails = <>
                 <p className="text-black"><strong>Event: LoanDefaulted</strong></p>
                 <p className="text-black">Pool ID: {event.poolId.toString()}</p>
                 <p className="text-black">Project ID: {event.projectId.toString()}</p>
-                <p className="text-black">Amount Defaulted: {event.amountDefaulted.toString()}</p>
+                <p className="text-black">Write-Off Amount: {event.writeOffAmount.toString()}</p>
               </>;
             }
             return (
-              <li key={`pool-event-${index}`} className="p-3 bg-blue-50 border border-blue-200 rounded shadow-sm">
+              <li key={`pool-event-${index}`} className="p-3 bg-blue-50 border border-blue-200 rounded shadow-sm text-xs">
                 {eventDetails}
               </li>
             );

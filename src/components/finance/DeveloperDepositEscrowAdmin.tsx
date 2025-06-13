@@ -232,7 +232,7 @@ export function DeveloperDepositEscrowAdmin() {
             eventName: 'RoleGranted'
           });
           const args = decoded.args as unknown as RoleGrantedEventArgs;
-          const roleName = roleHashMap[args.role] || args.role; // Fallback to hash if name not found
+          const roleName = roleHashMap[args.role] || args.role; // Fallback to hash
           setRoleEvents(prevEvents => [...prevEvents, args]);
           setStatusMessage(`RoleGranted event: Role ${roleName} (${args.role.substring(0,10)}...) granted to ${args.account} by ${args.sender}`);
         } catch (e) {
@@ -611,8 +611,8 @@ export function DeveloperDepositEscrowAdmin() {
         <h3 className="text-xl font-medium text-black">Manually Release Deposit</h3>
         <p className="text-sm text-gray-700">For emergency/contingency. Requires RELEASER_ROLE.</p>
         <div>
-          <label htmlFor="releaseProjectId" className="block text-sm font-medium text-black">Project ID:</label>
-          <input type="text" id="releaseProjectId" value={manageDepositProjectId} onChange={(e) => setManageDepositProjectId(e.target.value)} placeholder="Enter Project ID (uint256)" className="mt-1 block w-full input-style text-black" />
+          <label htmlFor="manageDepositProjectId" className="block text-sm font-medium text-black">Project ID:</label>
+          <input type="text" id="manageDepositProjectId" value={manageDepositProjectId} onChange={(e) => setManageDepositProjectId(e.target.value)} placeholder="Enter Project ID (uint256)" className="mt-1 block w-full input-style text-black" />
         </div>
         <button onClick={handleReleaseDeposit} disabled={isWritePending || isConfirming || !manageDepositProjectId} className="button-style bg-green-500 hover:bg-green-600">Release Deposit</button>
       </div>
@@ -623,7 +623,7 @@ export function DeveloperDepositEscrowAdmin() {
         <p className="text-sm text-gray-700">For project default. Requires SLASHER_ROLE.</p>
         <div>
           <label htmlFor="slashProjectId" className="block text-sm font-medium text-black">Project ID:</label>
-          <input type="text" id="slashProjectId" value={manageDepositProjectId} onChange={(e) => setManageDepositProjectId(e.target.value)} placeholder="Enter Project ID (uint256)" className="mt-1 block w-full input-style text-black" />
+          <input type="text" id="slashProjectId" value={manageDepositProjectId} onChange={(e) => setManageDepositProjectId(e.target.value)} placeholder="Same as Project ID above or enter new" className="mt-1 block w-full input-style text-black" />
         </div>
         <div>
           <label htmlFor="slashFeeRecipient" className="block text-sm font-medium text-black">Fee Recipient Address:</label>

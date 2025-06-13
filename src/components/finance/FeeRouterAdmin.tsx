@@ -13,8 +13,6 @@ type RoleGrantedEventArgs = {
   sender: Address;
 };
 // Add other event types if needed, e.g., for treasury updates
-type ProtocolTreasurySetEventArgs = { newTreasury: Address; oldTreasury: Address; };
-type CarbonTreasurySetEventArgs = { newTreasury: Address; oldTreasury: Address; };
 type RoleRevokedEventArgs = { role: Hex; account: Address; sender: Address; };
 type FeeRoutedEventArgs = {
     repaymentRouter: Address;
@@ -22,6 +20,22 @@ type FeeRoutedEventArgs = {
     protocolTreasuryAmount: bigint;
     carbonTreasuryAmount: bigint;
 };
+
+interface ProjectFeeDetails {
+    creationTime: bigint;
+    lastMgmtFeeTimestamp: bigint;
+    loanAmount: bigint;
+    developer: Address;
+    repaymentSchedule?: { 
+        scheduleType: number;
+        nextPaymentDue: bigint;
+        paymentAmount: bigint;
+    }
+}
+interface NextPaymentInfo {
+    dueDate: bigint;
+    amount: bigint;
+}
 
 const FEE_ROUTER_ADDRESS = process.env.NEXT_PUBLIC_FEE_ROUTER_ADDRESS as Address | undefined;
 
@@ -54,7 +68,6 @@ export function FeeRouterAdmin() {
   const { isLoading: isConfirming, isSuccess: isConfirmed, error: receiptError } = useWaitForTransactionReceipt({ hash: writeHash });
 
   // State for contract data
-  const [isPaused, setIsPaused] = useState<boolean | null>(null);
   const [protocolTreasury, setProtocolTreasury] = useState<Address | null>(null);
   const [carbonTreasury, setCarbonTreasury] = useState<Address | null>(null);
   const [newProtocolTreasury, setNewProtocolTreasury] = useState<string>('');
@@ -67,7 +80,6 @@ export function FeeRouterAdmin() {
   const [grantRoleToAddress, setGrantRoleToAddress] = useState<string>('');
   const [revokeRoleFromAddress, setRevokeRoleFromAddress] = useState<string>('');
   const [roleEvents, setRoleEvents] = useState<(RoleGrantedEventArgs | RoleRevokedEventArgs)[]>([]);
-  const [treasuryEvents, setTreasuryEvents] = useState<(ProtocolTreasurySetEventArgs & { eventName: 'ProtocolTreasurySet' } | CarbonTreasurySetEventArgs & { eventName: 'CarbonTreasurySet' })[]>([]);
   const [feeRoutedEvents, setFeeRoutedEvents] = useState<FeeRoutedEventArgs[]>([]);
   const [roleHashMap, setRoleHashMap] = useState<{ [hash: Hex]: string }>({});
   const [statusMessage, setStatusMessage] = useState<string>('');
@@ -81,29 +93,10 @@ export function FeeRouterAdmin() {
 
   // State for Viewing Fee Details
   const [viewFeeProjectId, setViewFeeProjectId] = useState<string>('');
-  const [projectFeeDetails, setProjectFeeDetails] = useState<{
-    creationTime: bigint;
-    lastMgmtFeeTimestamp: bigint;
-    loanAmount: bigint;
-    developer: Address;
-    repaymentSchedule?: { 
-        scheduleType: number; // Assuming 0: None, 1: Weekly, 2: Monthly from context
-        nextPaymentDue: bigint;
-        paymentAmount: bigint;
-    }
-  } | null>(null);
-  const [nextPaymentInfo, setNextPaymentInfo] = useState<{
-    dueDate: bigint;
-    amount: bigint;
-  } | null>(null);
+  const [projectFeeDetails, setProjectFeeDetails] = useState<ProjectFeeDetails | null>(null);
+  const [nextPaymentInfo, setNextPaymentInfo] = useState<NextPaymentInfo | null>(null);
 
   // --- Read Hooks ---
-  const { data: pausedData, refetch: refetchPaused } = useReadContract({
-    address: FEE_ROUTER_ADDRESS,
-    abi: feeRouterAbi,
-    functionName: 'paused',
-    query: { enabled: !!FEE_ROUTER_ADDRESS }
-  });
   const { data: protocolTreasuryData, refetch: refetchProtocolTreasury } = useReadContract({
     address: FEE_ROUTER_ADDRESS,
     abi: feeRouterAbi,
@@ -146,7 +139,6 @@ export function FeeRouterAdmin() {
   });
 
   // --- Effects ---
-  useEffect(() => { if (pausedData !== undefined) setIsPaused(pausedData as boolean); }, [pausedData]);
   useEffect(() => { if (protocolTreasuryData) setProtocolTreasury(protocolTreasuryData as Address); }, [protocolTreasuryData]);
   useEffect(() => { if (carbonTreasuryData) setCarbonTreasury(carbonTreasuryData as Address); }, [carbonTreasuryData]);
 
@@ -224,49 +216,13 @@ export function FeeRouterAdmin() {
         try {
           const decoded = decodeEventLog({ abi: feeRouterAbi, data: log.data, topics: log.topics, eventName: 'RoleGranted' });
           const args = decoded.args as unknown as RoleGrantedEventArgs;
-          const roleName = roleHashMap[args.role] || args.role; // Fallback to hash
+          const roleName = roleHashMap[args.role] || args.role;
           setRoleEvents(prevEvents => [...prevEvents, args]);
           setStatusMessage(`RoleGranted event: Role ${roleName} (${args.role.substring(0,10)}...) granted to ${args.account} by ${args.sender}`);
         } catch (e: unknown) { console.error("Error decoding RoleGranted event:", e); setStatusMessage("Error processing RoleGranted event."); }
       });
     },
     onError(error) { console.error('Error watching RoleGranted event:', error); setStatusMessage(`Error watching RoleGranted event: ${error.message}`); }
-  });
-
-  useWatchContractEvent({
-    address: FEE_ROUTER_ADDRESS,
-    abi: feeRouterAbi,
-    eventName: 'ProtocolTreasurySet',
-    onLogs(logs) {
-      logs.forEach(log => {
-        try {
-          const decoded = decodeEventLog({ abi: feeRouterAbi, data: log.data, topics: log.topics, eventName: 'ProtocolTreasurySet' });
-          const args = decoded.args as unknown as ProtocolTreasurySetEventArgs;
-          setTreasuryEvents(prevEvents => [...prevEvents, { ...args, eventName: 'ProtocolTreasurySet' as const }]);
-          setStatusMessage(`ProtocolTreasurySet event: New: ${args.newTreasury}, Old: ${args.oldTreasury}`);
-          refetchProtocolTreasury(); // Refetch to update display
-        } catch (e: unknown) { console.error("Error decoding ProtocolTreasurySet event:", e); setStatusMessage("Error processing ProtocolTreasurySet event."); }
-      });
-    },
-    onError(error) { console.error('Error watching ProtocolTreasurySet event:', error); setStatusMessage(`Error watching ProtocolTreasurySet event: ${error.message}`); }
-  });
-  
-  useWatchContractEvent({
-    address: FEE_ROUTER_ADDRESS,
-    abi: feeRouterAbi,
-    eventName: 'CarbonTreasurySet',
-    onLogs(logs) {
-      logs.forEach(log => {
-        try {
-          const decoded = decodeEventLog({ abi: feeRouterAbi, data: log.data, topics: log.topics, eventName: 'CarbonTreasurySet' });
-          const args = decoded.args as unknown as CarbonTreasurySetEventArgs;
-          setTreasuryEvents(prevEvents => [...prevEvents, { ...args, eventName: 'CarbonTreasurySet' as const }]);
-          setStatusMessage(`CarbonTreasurySet event: New: ${args.newTreasury}, Old: ${args.oldTreasury}`);
-          refetchCarbonTreasury(); // Refetch to update display
-        } catch (e: unknown) { console.error("Error decoding CarbonTreasurySet event:", e); setStatusMessage("Error processing CarbonTreasurySet event."); }
-      });
-    },
-    onError(error) { console.error('Error watching CarbonTreasurySet event:', error); setStatusMessage(`Error watching CarbonTreasurySet event: ${error.message}`); }
   });
 
   useWatchContractEvent({
@@ -296,8 +252,8 @@ export function FeeRouterAdmin() {
         try {
           const decoded = decodeEventLog({ abi: feeRouterAbi, data: log.data, topics: log.topics, eventName: 'FeeRouted' });
           const args = decoded.args as unknown as FeeRoutedEventArgs;
-          setFeeRoutedEvents(prevEvents => [...prevEvents, args]);
-          setStatusMessage(`FeeRouted event: Total ${args.totalFeeAmount.toString()}, Protocol ${args.protocolTreasuryAmount.toString()}, Carbon ${args.carbonTreasuryAmount.toString()}`);
+          setFeeRoutedEvents(prev => [...prev, args]);
+          setStatusMessage(`FeeRouted event: Total ${args.totalFeeAmount}, Protocol ${args.protocolTreasuryAmount}, Carbon ${args.carbonTreasuryAmount}`);
         } catch (e: unknown) { console.error("Error decoding FeeRouted event:", e); setStatusMessage("Error processing FeeRouted event."); }
       });
     },
@@ -305,14 +261,13 @@ export function FeeRouterAdmin() {
   });
 
   const refetchAll = useCallback(() => {
-    refetchPaused();
     refetchProtocolTreasury();
     refetchCarbonTreasury();
     if (viewFeeProjectId) { // Also refetch fee details if a project ID is being viewed
       fetchProjectFeeDetails();
       fetchNextPaymentInfo();
     }
-  }, [refetchPaused, refetchProtocolTreasury, refetchCarbonTreasury, viewFeeProjectId, fetchProjectFeeDetails, fetchNextPaymentInfo]);
+  }, [refetchProtocolTreasury, refetchCarbonTreasury, viewFeeProjectId, fetchProjectFeeDetails, fetchNextPaymentInfo]);
 
   const handleWrite = (functionName: string, args: unknown[], successMessage?: string) => {
     if (!FEE_ROUTER_ADDRESS) { setStatusMessage('Fee Router contract address not set'); return; }
@@ -386,9 +341,6 @@ export function FeeRouterAdmin() {
     }
   };
 
-  const handlePause = () => handleWrite('pause', [], 'Pause transaction submitted...');
-  const handleUnpause = () => handleWrite('unpause', [], 'Unpause transaction submitted...');
-
   // --- View Fee Details Function ---
   const handleViewFeeDetails = () => {
     if (!viewFeeProjectId) { 
@@ -404,22 +356,22 @@ export function FeeRouterAdmin() {
   };
 
   useEffect(() => {
-    if (isConfirmed) { setStatusMessage(`Transaction successful! Hash: ${writeHash}`); refetchAll(); }
+    if (isConfirmed) { setStatusMessage(`Success! Hash: ${writeHash}`); refetchAll(); }
     if (writeError && !isConfirmed) { setStatusMessage(`Transaction Error: ${writeError.message}`); }
     if (receiptError && !isConfirmed) { setStatusMessage(`Receipt Error: ${receiptError.message}`); }
   }, [isConfirmed, writeHash, writeError, receiptError, refetchAll]);
 
-  // Effect for View Fee Details Data
+  // Effect for KYC View Data
   useEffect(() => {
-    if (projectFeeDetailsData) setProjectFeeDetails(projectFeeDetailsData as typeof projectFeeDetails);
+    if (projectFeeDetailsData) setProjectFeeDetails(projectFeeDetailsData as unknown as ProjectFeeDetails);
   }, [projectFeeDetailsData]);
 
   useEffect(() => {
-    if (nextPaymentInfoData) setNextPaymentInfo(nextPaymentInfoData as typeof nextPaymentInfo);
+    if (nextPaymentInfoData) setNextPaymentInfo(nextPaymentInfoData as unknown as NextPaymentInfo);
   }, [nextPaymentInfoData]);
 
   if (!FEE_ROUTER_ADDRESS) {
-    return <p className="text-red-500">Error: NEXT_PUBLIC_FEE_ROUTER_ADDRESS is not set.</p>;
+    return <p className="text-red-500 p-4">Error: NEXT_PUBLIC_FEE_ROUTER_ADDRESS is not set.</p>;
   }
 
   return (
@@ -428,7 +380,6 @@ export function FeeRouterAdmin() {
 
       <div className="p-4 border rounded bg-gray-50">
         <h3 className="text-xl font-medium text-black mb-2">Contract Status</h3>
-        <p className="text-black"><strong>Paused:</strong> {isPaused === null ? 'Loading...' : isPaused ? 'Yes' : 'No'}</p>
         <p className="text-black"><strong>Protocol Treasury:</strong> {protocolTreasury || 'Loading...'}</p>
         <p className="text-black"><strong>Carbon Treasury:</strong> {carbonTreasury || 'Loading...'}</p>
         <button onClick={refetchAll} className="mt-2 px-3 py-1 text-sm bg-blue-500 text-white rounded hover:bg-blue-600">Refresh Data</button>
@@ -439,13 +390,13 @@ export function FeeRouterAdmin() {
         <div className="space-y-4 p-4 border rounded bg-gray-50">
             <h3 className="text-xl font-medium text-black">Set Protocol Treasury</h3>
             <p className="text-sm text-gray-700">Requires DEFAULT_ADMIN_ROLE.</p>
-            <input type="text" value={newProtocolTreasury} onChange={(e) => setNewProtocolTreasury(e.target.value)} placeholder="0x... Protocol Treasury" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black placeholder-gray-500" />
+            <input type="text" value={newProtocolTreasury} onChange={(e) => setNewProtocolTreasury(e.target.value)} placeholder="0x... Protocol Treasury" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black" />
             <button onClick={handleSetProtocolTreasury} disabled={isWritePending || isConfirming} className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-gray-400">Set Protocol Treasury</button>
         </div>
         <div className="space-y-4 p-4 border rounded bg-gray-50">
             <h3 className="text-xl font-medium text-black">Set Carbon Treasury</h3>
             <p className="text-sm text-gray-700">Requires DEFAULT_ADMIN_ROLE.</p>
-            <input type="text" value={newCarbonTreasury} onChange={(e) => setNewCarbonTreasury(e.target.value)} placeholder="0x... Carbon Treasury" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black placeholder-gray-500" />
+            <input type="text" value={newCarbonTreasury} onChange={(e) => setNewCarbonTreasury(e.target.value)} placeholder="0x... Carbon Treasury" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black" />
             <button onClick={handleSetCarbonTreasury} disabled={isWritePending || isConfirming} className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 disabled:bg-gray-400">Set Carbon Treasury</button>
         </div>
       </div>
@@ -465,7 +416,7 @@ export function FeeRouterAdmin() {
         </div>
         <div>
           <label htmlFor="grantRoleAddressFR" className="block text-sm font-medium text-black">Address to Grant Role:</label>
-          <input type="text" id="grantRoleAddressFR" value={grantRoleToAddress} onChange={(e) => setGrantRoleToAddress(e.target.value)} placeholder="0x..." className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black placeholder-gray-500" />
+          <input type="text" id="grantRoleAddressFR" value={grantRoleToAddress} onChange={(e) => setGrantRoleToAddress(e.target.value)} placeholder="0x..." className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black" />
         </div>
         <button onClick={handleGrantRole} disabled={!selectedRoleBytes32 || !grantRoleToAddress || isWritePending || isConfirming} className="px-4 py-2 bg-orange-500 text-white rounded hover:bg-orange-600 disabled:bg-gray-400 disabled:cursor-not-allowed">
           Grant Role
@@ -520,28 +471,6 @@ export function FeeRouterAdmin() {
         )}
       </div>
 
-      {/* Pause/Unpause Contract */}
-      <div className="space-y-4 p-4 border rounded bg-gray-50">
-        <h3 className="text-xl font-medium text-black">Pause Control</h3>
-        <p className="text-sm text-gray-700">Requires PAUSER_ROLE.</p>
-        <div className="flex space-x-4">
-          <button
-            onClick={handlePause}
-            disabled={isWritePending || isConfirming || isPaused === true}
-            className="px-4 py-2 bg-yellow-500 text-white rounded hover:bg-yellow-600 disabled:bg-gray-400 disabled:text-gray-600 disabled:cursor-not-allowed"
-          >
-            Pause
-          </button>
-          <button
-            onClick={handleUnpause}
-            disabled={isWritePending || isConfirming || isPaused === false}
-            className="px-4 py-2 bg-green-500 text-white rounded hover:bg-green-600 disabled:bg-gray-400 disabled:text-gray-600 disabled:cursor-not-allowed"
-          >
-            Unpause
-          </button>
-        </div>
-      </div>
-
       {/* View Fee-Related Information for Project */}
       <div className="space-y-4 p-4 border rounded bg-gray-50">
         <h3 className="text-xl font-medium text-black">View Project Fee Details</h3>
@@ -592,40 +521,21 @@ export function FeeRouterAdmin() {
       {/* Recent Events (RoleGranted and Treasury Updates) */}
       <div className="p-4 border rounded bg-gray-50 mt-6">
         <h3 className="text-xl font-medium text-black mb-3">Recent Events</h3>
-        {(roleEvents.length === 0 && treasuryEvents.length === 0) && <p className="text-gray-600">No relevant events detected yet.</p>}
+        {roleEvents.length === 0 && <p className="text-gray-600">No role events detected yet.</p>}
         
         {roleEvents.length > 0 && (
           <div className="mb-4">
-            <h4 className="text-lg font-medium text-black mb-2">Role Granted Events:</h4>
+            <h4 className="text-lg font-medium text-black mb-2">Role Events:</h4>
             <ul className="space-y-3">
-              {roleEvents.slice(-3).reverse().map((event, index) => { // Display last 3, newest first
-                const roleName = roleHashMap[event.role] || event.role; // Fallback to hash
+              {roleEvents.slice(-3).reverse().map((event, index) => {
+                const roleName = roleHashMap[event.role] || event.role;
                 const eventType = 'sender' in event ? 'RoleGranted' : 'RoleRevoked';
                 return (
                   <li key={`role-${index}`} className="p-3 bg-white border border-gray-200 rounded shadow-sm">
                     <p className="text-sm text-black"><strong>Event: {eventType}</strong></p>
                     <p className="text-sm text-black"><strong>Role:</strong> {roleName} ({event.role.substring(0, 10)}...)</p>
                     <p className="text-sm text-black"><strong>Account:</strong> {event.account}</p>
-                    {(event as RoleGrantedEventArgs).sender && <p className="text-sm text-black"><strong>Sender:</strong> {(event as RoleGrantedEventArgs).sender}</p>}
-                  </li>
-                );
-              })}
-            </ul>
-          </div>
-        )}
-
-        {treasuryEvents.length > 0 && (
-          <div>
-            <h4 className="text-lg font-medium text-black mb-2">Treasury Update Events:</h4>
-            <ul className="space-y-3">
-              {treasuryEvents.slice(-3).reverse().map((event, index) => { 
-                return (
-                  <li key={`treasury-${index}`} className="p-3 bg-white border border-gray-200 rounded shadow-sm">
-                      <>
-                        <p className="text-sm text-black"><strong>Event:</strong> {event.eventName}</p>
-                        <p className="text-sm text-black"><strong>New Treasury:</strong> {event.newTreasury}</p>
-                        <p className="text-sm text-black"><strong>Old Treasury:</strong> {event.oldTreasury}</p>
-                      </>
+                    {'sender' in event && event.sender && <p className="text-sm text-black"><strong>Sender:</strong> {(event as RoleGrantedEventArgs).sender}</p>}
                   </li>
                 );
               })}
@@ -640,7 +550,7 @@ export function FeeRouterAdmin() {
         {feeRoutedEvents.length === 0 && <p className="text-gray-600">No FeeRouted events detected yet.</p>}
         <ul className="space-y-3">
           {feeRoutedEvents.slice(-3).reverse().map((event, index) => (
-              <li key={`feeRouted-${index}`} className="p-3 bg-indigo-50 border border-indigo-200 rounded shadow-sm">
+              <li key={`feeRouted-${index}`} className="p-3 bg-indigo-50 border-indigo-200 rounded shadow-sm">
                 <p className="text-sm text-black"><strong>Event: FeeRouted</strong></p>
                 <p className="text-black">Repayment Router: {event.repaymentRouter}</p>
                 <p className="text-black">Total Fee: {event.totalFeeAmount.toString()}</p>

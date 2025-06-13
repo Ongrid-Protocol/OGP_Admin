@@ -30,10 +30,15 @@ type KYCStatusChangedEventArgs = {
   isVerified: boolean;
 };
 
+type DeveloperFundedCounterIncrementedEventArgs = {
+  developer: Address;
+  newCount: number; // uint32 in contract
+};
+
 interface DeveloperInfo {
   kycDataHash: Hex;
   isVerified: boolean;
-  timesFunded: bigint; // Or string if already formatted, but bigint is typical from contract
+  timesFunded: number; // This is a uint32 in the contract
 }
 
 const DEVELOPER_REGISTRY_ADDRESS = process.env.NEXT_PUBLIC_DEVELOPER_REGISTRY_ADDRESS as Address | undefined;
@@ -97,7 +102,11 @@ export function DeveloperRegistryAdmin() {
   const [viewKycDeveloperAddress, setViewKycDeveloperAddress] = useState<string>('');
   const [developerInfo, setDeveloperInfo] = useState<DeveloperInfo | null>(null);
   const [developerKycLocation, setDeveloperKycLocation] = useState<string | null>(null);
-  const [kycEvents, setKycEvents] = useState<(KYCSubmittedEventArgs | KYCStatusChangedEventArgs)[]>([]);
+  const [kycEvents, setKycEvents] = useState<(
+      KYCSubmittedEventArgs | 
+      KYCStatusChangedEventArgs |
+      DeveloperFundedCounterIncrementedEventArgs
+    )[]>([]);
 
   // --- Read Hooks (existing) ---
   const { data: pausedData, refetch: refetchPaused } = useReadContract({
@@ -313,6 +322,35 @@ export function DeveloperRegistryAdmin() {
     }
   });
 
+  // --- Event Watcher for DeveloperFundedCounterIncremented ---
+  useWatchContractEvent({
+    address: DEVELOPER_REGISTRY_ADDRESS,
+    abi: developerRegistryAbi,
+    eventName: 'DeveloperFundedCounterIncremented',
+    onLogs(logs) {
+      logs.forEach(log => {
+        try {
+          const decoded = decodeEventLog({
+            abi: developerRegistryAbi,
+            data: log.data,
+            topics: log.topics,
+            eventName: 'DeveloperFundedCounterIncremented'
+          });
+          const args = decoded.args as unknown as DeveloperFundedCounterIncrementedEventArgs;
+          setKycEvents(prevEvents => [...prevEvents, args]);
+          setStatusMessage(`DeveloperFundedCounterIncremented: Dev ${args.developer}, New Count: ${args.newCount}`);
+        } catch (e: unknown) {
+          console.error("Error decoding DeveloperFundedCounterIncremented event:", e);
+          setStatusMessage("Error processing DeveloperFundedCounterIncremented event.");
+        }
+      });
+    },
+    onError(error) {
+      console.error('Error watching DeveloperFundedCounterIncremented event:', error);
+      setStatusMessage(`Error watching DeveloperFundedCounterIncremented event: ${error.message}`);
+    }
+  });
+
   // Refetch function (existing + new)
   const refetchAll = useCallback(() => {
     refetchPaused();
@@ -496,7 +534,10 @@ export function DeveloperRegistryAdmin() {
 
   // Effect for KYC View Data
   useEffect(() => {
-    if (devInfoData) setDeveloperInfo(devInfoData as unknown as DeveloperInfo);
+    if (devInfoData) {
+        const info = devInfoData as { kycDataHash: Hex, isVerified: boolean, timesFunded: number };
+        setDeveloperInfo(info);
+    }
     if (devInfoError) setStatusMessage(`Error fetching developer info: ${devInfoError.message}`);
   }, [devInfoData, devInfoError]);
 
@@ -690,7 +731,7 @@ export function DeveloperRegistryAdmin() {
             <p className="font-semibold text-black"><strong>Developer Info:</strong></p>
             <p className="text-black">KYC Data Hash: {developerInfo.kycDataHash}</p>
             <p className="text-black">Is Verified: {developerInfo.isVerified.toString()}</p>
-            <p className="text-black">Times Funded: {developerInfo.timesFunded.toString()}</p>
+            <p className="text-black">Times Funded: {developerInfo.timesFunded?.toString()}</p>
             <p className="text-black">KYC Data Location: {developerKycLocation || 'N/A'}</p>
           </div>
         )}
@@ -747,27 +788,36 @@ export function DeveloperRegistryAdmin() {
 
       {/* Recent KYC Events */}
       <div className="p-4 border rounded bg-gray-50 mt-6">
-        <h3 className="text-xl font-medium text-black mb-3">Recent KYC Events</h3>
-        {kycEvents.length === 0 && <p className="text-gray-700">No KYC events detected yet.</p>}
+        <h3 className="text-xl font-medium text-black mb-3">Recent KYC & Funding Events</h3>
+        {kycEvents.length === 0 && <p className="text-gray-700">No KYC or funding events detected yet.</p>}
         <ul className="space-y-3">
           {kycEvents.slice(-5).reverse().map((event, index) => {
             if ('kycHash' in event) { // KYCSubmitted
               return (
-                <li key={`kyc-${index}`} className="p-3 bg-white border border-gray-200 rounded shadow-sm">
-                  <p className="text-sm text-black"><strong>Event: KYCSubmitted</strong></p>
+                <li key={`kyc-submit-${index}`} className="p-3 bg-yellow-50 border-yellow-200 rounded shadow-sm">
+                  <p className="text-sm text-black"><strong>Event: KYC Submitted</strong></p>
                   <p className="text-sm text-black">Developer: {event.developer}</p>
-                  <p className="text-sm text-black">KYC Hash: {event.kycHash.substring(0,10)}...</p>
+                  <p className="text-sm text-black">KYC Hash: {event.kycHash.substring(0, 12)}...</p>
                 </li>
               );
-            } else { // KYCStatusChanged
+            } else if ('isVerified' in event) { // KYCStatusChanged
               return (
-                <li key={`kyc-${index}`} className="p-3 bg-white border border-gray-200 rounded shadow-sm">
-                  <p className="text-sm text-black"><strong>Event: KYCStatusChanged</strong></p>
+                <li key={`kyc-status-${index}`} className="p-3 bg-green-50 border-green-200 rounded shadow-sm">
+                  <p className="text-sm text-black"><strong>Event: KYC Status Changed</strong></p>
                   <p className="text-sm text-black">Developer: {event.developer}</p>
                   <p className="text-sm text-black">Is Verified: {event.isVerified.toString()}</p>
                 </li>
               );
+            } else if ('newCount' in event) { // DeveloperFundedCounterIncremented
+              return (
+                <li key={`kyc-fund-${index}`} className="p-3 bg-blue-50 border-blue-200 rounded shadow-sm">
+                  <p className="text-sm text-black"><strong>Event: Project Funded</strong></p>
+                  <p className="text-sm text-black">Developer: {event.developer}</p>
+                  <p className="text-sm text-black">New Funded Count: {(event as DeveloperFundedCounterIncrementedEventArgs).newCount.toString()}</p>
+                </li>
+              );
             }
+            return null; // Should not happen with defined types
           })}
         </ul>
       </div>

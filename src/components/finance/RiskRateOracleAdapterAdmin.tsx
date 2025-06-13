@@ -8,9 +8,9 @@ import constantsAbiJson from '@/abis/Constants.json';
 
 type RoleGrantedEventArgs = { role: Hex; account: Address; sender: Address; };
 type RoleRevokedEventArgs = { role: Hex; account: Address; sender: Address; };
-type ProjectRiskLevelSetEventArgs = { projectId: bigint; riskLevel: number; /* uint16 */ };
-type RiskParamsPushedEventArgs = { projectId: bigint; aprBps: number; /* uint16 */ tenor: bigint; /* uint48 */ };
-type PeriodicAssessmentRequestedEventArgs = { projectId: bigint; lastAssessmentTimestamp: bigint; };
+type ProjectRiskLevelSetEventArgs = { projectId: bigint; riskLevel: number; };
+type RiskParamsPushedEventArgs = { projectId: bigint; aprBps: number; /* uint16 */ tenor: bigint; /* uint48 */ targetContract: Address, oracle: Address };
+type PeriodicAssessmentRequestedEventArgs = { projectId: bigint; timestamp: bigint; targetContract: Address, poolId: bigint };
 type AssessmentIntervalUpdatedEventArgs = { newInterval: bigint; oldInterval: bigint; };
 
 const RISK_RATE_ORACLE_ADAPTER_ADDRESS = process.env.NEXT_PUBLIC_RISK_RATE_ORACLE_ADAPTER_ADDRESS as Address | undefined;
@@ -58,7 +58,7 @@ export function RiskRateOracleAdapterAdmin() {
     (RiskParamsPushedEventArgs & { eventName: 'RiskParamsPushed' }) | 
     (PeriodicAssessmentRequestedEventArgs & { eventName: 'PeriodicAssessmentRequested' }) | 
     (AssessmentIntervalUpdatedEventArgs & { eventName: 'AssessmentIntervalUpdated' }) |
-    { eventName: 'BatchRiskAssessmentTriggered' }
+    ({ eventName: 'BatchRiskAssessmentTriggered', timestamp: bigint })
   )[]>([]);
   const [roleHashMap, setRoleHashMap] = useState<{ [hash: Hex]: string }>({});
   const [statusMessage, setStatusMessage] = useState<string>('');
@@ -189,59 +189,6 @@ export function RiskRateOracleAdapterAdmin() {
   useWatchContractEvent({
     address: RISK_RATE_ORACLE_ADAPTER_ADDRESS,
     abi: riskRateOracleAdapterAbi,
-    eventName: 'RoleGranted',
-    onLogs(logs) {
-      logs.forEach(log => {
-        try {
-          const decoded = decodeEventLog({ abi: riskRateOracleAdapterAbi, data: log.data, topics: log.topics, eventName: 'RoleGranted' });
-          const args = decoded.args as unknown as RoleGrantedEventArgs;
-          const roleName = roleHashMap[args.role] || args.role; // Fallback to hash
-          setRoleEvents(prev => [...prev, args]);
-          setStatusMessage(`RoleGranted Event: Role ${roleName} (${args.role.substring(0,10)}...) granted to ${args.account}`);
-        } catch (e: unknown) { console.error("Error decoding RoleGranted:", e); setStatusMessage("Error processing RoleGranted event."); }
-      });
-    },
-    onError: (error) => { console.error('Error watching RoleGranted event:', error); setStatusMessage(`Error watching RoleGranted event: ${error.message}`);}
-  });
-
-  useWatchContractEvent({
-    address: RISK_RATE_ORACLE_ADAPTER_ADDRESS,
-    abi: riskRateOracleAdapterAbi,
-    eventName: 'RoleRevoked',
-    onLogs(logs) {
-      logs.forEach(log => {
-        try {
-          const decoded = decodeEventLog({ abi: riskRateOracleAdapterAbi, data: log.data, topics: log.topics, eventName: 'RoleRevoked' });
-          const args = decoded.args as unknown as RoleRevokedEventArgs;
-          const roleName = roleHashMap[args.role] || args.role;
-          setRoleEvents(prev => [...prev, args]);
-          setStatusMessage(`RoleRevoked Event: Role ${roleName} (${args.role.substring(0,10)}...) revoked from ${args.account}`);
-        } catch (e: unknown) { console.error("Error decoding RoleRevoked:", e); setStatusMessage("Error processing RoleRevoked event."); }
-      });
-    },
-    onError: (error) => { console.error('Error watching RoleRevoked event:', error); setStatusMessage(`Error watching RoleRevoked event: ${error.message}`);}
-  });
-
-  useWatchContractEvent({
-    address: RISK_RATE_ORACLE_ADAPTER_ADDRESS,
-    abi: riskRateOracleAdapterAbi,
-    eventName: 'ProjectRiskLevelSet',
-    onLogs(logs) {
-      logs.forEach(log => {
-        try {
-          const decoded = decodeEventLog({ abi: riskRateOracleAdapterAbi, data: log.data, topics: log.topics, eventName: 'ProjectRiskLevelSet' });
-          const args = decoded.args as unknown as ProjectRiskLevelSetEventArgs;
-          setOracleEvents(prev => [...prev, { ...args, eventName: 'ProjectRiskLevelSet' as const }]);
-          setStatusMessage(`ProjectRiskLevelSet: Project ${args.projectId.toString()}, Level ${args.riskLevel}`);
-        } catch (e: unknown) { console.error("Error decoding ProjectRiskLevelSet:", e); setStatusMessage("Error processing ProjectRiskLevelSet event."); }
-      });
-    },
-    onError: (error) => { console.error('Error watching ProjectRiskLevelSet event:', error); setStatusMessage(`Error watching ProjectRiskLevelSet event: ${error.message}`);}
-  });
-
-  useWatchContractEvent({
-    address: RISK_RATE_ORACLE_ADAPTER_ADDRESS,
-    abi: riskRateOracleAdapterAbi,
     eventName: 'RiskParamsPushed',
     onLogs(logs) {
       logs.forEach(log => {
@@ -259,9 +206,17 @@ export function RiskRateOracleAdapterAdmin() {
     address: RISK_RATE_ORACLE_ADAPTER_ADDRESS,
     abi: riskRateOracleAdapterAbi,
     eventName: 'BatchRiskAssessmentTriggered',
-    onLogs() {
-        setOracleEvents(prev => [...prev, {eventName: 'BatchRiskAssessmentTriggered' as const}]);
-        setStatusMessage('BatchRiskAssessmentTriggered event received.');
+    onLogs(logs) {
+      logs.forEach(log => {
+        try {
+          const decoded = decodeEventLog({ abi: riskRateOracleAdapterAbi, data: log.data, topics: log.topics, eventName: 'BatchRiskAssessmentTriggered' });
+          const args = decoded.args as unknown as { timestamp: bigint };
+          setOracleEvents(prev => [...prev, {eventName: 'BatchRiskAssessmentTriggered' as const, ...args}]);
+          setStatusMessage(`BatchRiskAssessmentTriggered event received at ${new Date(Number(args.timestamp) * 1000).toLocaleString()}.`);
+        } catch (e: unknown) {
+          console.error("Error decoding BatchRiskAssessmentTriggered event:", e);
+        }
+      });
     }
   });
 
@@ -294,6 +249,56 @@ export function RiskRateOracleAdapterAdmin() {
           setStatusMessage(`AssessmentIntervalUpdated: New ${args.newInterval.toString()}, Old ${args.oldInterval.toString()}`);
           refetchInterval();
         } catch (e: unknown) { console.error("Error decoding AssessmentIntervalUpdated:", e); setStatusMessage("Error processing AssessmentIntervalUpdated event."); }
+      });
+    }
+  });
+
+  useWatchContractEvent({
+    address: RISK_RATE_ORACLE_ADAPTER_ADDRESS,
+    abi: riskRateOracleAdapterAbi,
+    eventName: 'RoleGranted',
+    onLogs(logs) {
+      logs.forEach(log => {
+        try {
+          const decoded = decodeEventLog({ 
+            abi: riskRateOracleAdapterAbi, 
+            data: log.data, 
+            topics: log.topics, 
+            eventName: 'RoleGranted' 
+          });
+          const args = decoded.args as unknown as RoleGrantedEventArgs;
+          setRoleEvents(prev => [...prev, args]);
+          const roleName = roleHashMap[args.role] || args.role;
+          setStatusMessage(`RoleGranted: ${roleName} to ${args.account}`);
+        } catch (e: unknown) { 
+          console.error("Error decoding RoleGranted:", e); 
+          setStatusMessage("Error processing RoleGranted event."); 
+        }
+      });
+    }
+  });
+
+  useWatchContractEvent({
+    address: RISK_RATE_ORACLE_ADAPTER_ADDRESS,
+    abi: riskRateOracleAdapterAbi,
+    eventName: 'RoleRevoked',
+    onLogs(logs) {
+      logs.forEach(log => {
+        try {
+          const decoded = decodeEventLog({ 
+            abi: riskRateOracleAdapterAbi, 
+            data: log.data, 
+            topics: log.topics, 
+            eventName: 'RoleRevoked' 
+          });
+          const args = decoded.args as unknown as RoleRevokedEventArgs;
+          setRoleEvents(prev => [...prev, args]);
+          const roleName = roleHashMap[args.role] || args.role;
+          setStatusMessage(`RoleRevoked: ${roleName} from ${args.account}`);
+        } catch (e: unknown) { 
+          console.error("Error decoding RoleRevoked:", e); 
+          setStatusMessage("Error processing RoleRevoked event."); 
+        }
       });
     }
   });
@@ -577,26 +582,25 @@ export function RiskRateOracleAdapterAdmin() {
         </div>
       )}
 
-      {roleEvents.length > 0 && (
-        <div className="p-4 border rounded bg-gray-50 mt-6">
-          <h3 className="text-xl font-medium text-black mb-3">Recent RoleGranted Events</h3>
-          {roleEvents.length === 0 && <p className="text-gray-600">No RoleGranted events detected yet.</p>}
-          <ul className="space-y-3">
-            {roleEvents.slice(-5).reverse().map((event, index) => { // Display last 5, newest first
-                const roleName = roleHashMap[event.role] || event.role; // Fallback to hash
-                const eventType = 'sender' in event ? 'RoleGranted' : 'RoleRevoked';
-                return (
-                <li key={index} className="p-3 bg-white border border-gray-200 rounded shadow-sm">
-                    <p className="text-sm text-black"><strong>Event: {eventType}</strong></p>
-                    <p className="text-sm text-black"><strong>Role:</strong> {roleName} ({event.role.substring(0, 10)}...)</p>
-                    <p className="text-sm text-black"><strong>Account:</strong> {event.account}</p>
-                    {(event as RoleGrantedEventArgs).sender && <p className="text-sm text-black"><strong>Sender:</strong> {(event as RoleGrantedEventArgs).sender}</p>}
-                </li>
-                );
-            })}
-          </ul>
-        </div>
-      )}
+      <div className="p-4 border rounded bg-gray-50 mt-6">
+        <h3 className="text-xl font-medium text-black mb-3">Recent Role Events</h3>
+        {roleEvents.length === 0 && <p className="text-gray-600">No role events detected yet.</p>}
+        <ul className="space-y-3">
+          {roleEvents.slice(-5).reverse().map((event, index) => { // Display last 5, newest first
+              const roleName = roleHashMap[event.role] || event.role; // Fallback to hash
+              const eventType = 'sender' in event ? 'RoleGranted' : 'RoleRevoked';
+              return (
+              <li key={index} className="p-3 bg-white border border-gray-200 rounded shadow-sm">
+                  <p className="text-sm text-black"><strong>Event: {eventType}</strong></p>
+                  <p className="text-sm text-black"><strong>Role:</strong> {roleName} ({event.role.substring(0, 10)}...)</p>
+                  <p className="text-sm text-black"><strong>Account:</strong> {event.account}</p>
+                  {(event as RoleGrantedEventArgs).sender && <p className="text-sm text-black"><strong>Sender:</strong> {(event as RoleGrantedEventArgs).sender}</p>}
+              </li>
+              );
+          })}
+        </ul>
+      </div>
+      
       {oracleEvents.length > 0 && (
         <div className="p-4 border rounded bg-gray-50 mt-6">
           <h3 className="text-xl font-medium text-black mb-3">Recent Oracle Events</h3>
@@ -620,7 +624,7 @@ export function RiskRateOracleAdapterAdmin() {
                 {event.eventName === 'PeriodicAssessmentRequested' && (
                     <>
                         <p className="text-black">Project ID: {event.projectId.toString()}</p>
-                        <p className="text-black">Last Assessment: {new Date(Number(event.lastAssessmentTimestamp) * 1000).toLocaleString()}</p>
+                        <p className="text-black">Last Assessment: {new Date(Number(event.timestamp) * 1000).toLocaleString()}</p>
                     </>
                 )}
                 {event.eventName === 'AssessmentIntervalUpdated' && (
@@ -628,6 +632,9 @@ export function RiskRateOracleAdapterAdmin() {
                         <p className="text-black">New Interval: {event.newInterval.toString()}</p>
                         <p className="text-black">Old Interval: {event.oldInterval.toString()}</p>
                     </>
+                )}
+                {event.eventName === 'BatchRiskAssessmentTriggered' && (
+                    <p className="text-black">Timestamp: {new Date(Number(event.timestamp) * 1000).toLocaleString()}</p>
                 )}
               </li>
             ))}

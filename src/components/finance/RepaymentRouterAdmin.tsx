@@ -11,6 +11,29 @@ type RoleGrantedEventArgs = { role: Hex; account: Address; sender: Address; };
 
 type RoleRevokedEventArgs = { role: Hex; account: Address; sender: Address; };
 
+type FundingSourceSetEventArgs = {
+    projectId: bigint;
+    fundingSource: Address;
+    poolId: bigint;
+    setter: Address;
+};
+
+type RepaymentRoutedEventArgs = {
+    projectId: bigint;
+    payer: Address;
+    totalAmountRepaid: bigint;
+    feeAmount: bigint;
+    principalAmount: bigint;
+    interestAmount: bigint;
+    fundingSource: Address;
+};
+
+interface PaymentSummary {
+    totalRepaid: bigint;
+    lastPayment: bigint;
+    paymentCount: bigint;
+}
+
 const REPAYMENT_ROUTER_ADDRESS = process.env.NEXT_PUBLIC_REPAYMENT_ROUTER_ADDRESS as Address | undefined;
 
 const repaymentRouterAbi = repaymentRouterAbiJson.abi;
@@ -48,6 +71,7 @@ export function RepaymentRouterAdmin() {
   const [grantRoleToAddress, setGrantRoleToAddress] = useState<string>('');
   const [revokeRoleFromAddress, setRevokeRoleFromAddress] = useState<string>('');
   const [roleEvents, setRoleEvents] = useState<(RoleGrantedEventArgs | RoleRevokedEventArgs)[]>([]);
+  const [routerEvents, setRouterEvents] = useState<(FundingSourceSetEventArgs | RepaymentRoutedEventArgs)[]>([]);
   const [roleHashMap, setRoleHashMap] = useState<{ [hash: Hex]: string }>({});
   const [statusMessage, setStatusMessage] = useState<string>('');
   // Add state for other events like RepaymentProcessed
@@ -59,11 +83,39 @@ export function RepaymentRouterAdmin() {
   const [hasRoleResult, setHasRoleResult] = useState<boolean | string | null>(null);
   const [hasRoleStatus, setHasRoleStatus] = useState<string>('');
 
+  // State for Viewing Project Info
+  const [viewProjectId, setViewProjectId] = useState<string>('');
+  const [fundingSourceInfo, setFundingSourceInfo] = useState<{ source: Address | null; poolId: bigint | null }>({ source: null, poolId: null });
+  const [paymentSummary, setPaymentSummary] = useState<PaymentSummary | null>(null);
+
   const { data: pausedData, refetch: refetchPaused } = useReadContract({
     address: REPAYMENT_ROUTER_ADDRESS,
     abi: repaymentRouterAbi,
     functionName: 'paused',
     query: { enabled: !!REPAYMENT_ROUTER_ADDRESS }
+  });
+
+  // --- Read Hooks for Viewing Project Info (on demand) ---
+  const { data: fundingSourceData, refetch: fetchFundingSource } = useReadContract({
+    address: REPAYMENT_ROUTER_ADDRESS,
+    abi: repaymentRouterAbi,
+    functionName: 'getFundingSource',
+    args: viewProjectId ? [BigInt(viewProjectId)] : undefined,
+    query: { enabled: false }
+  });
+  const { data: poolIdData, refetch: fetchPoolId } = useReadContract({
+    address: REPAYMENT_ROUTER_ADDRESS,
+    abi: repaymentRouterAbi,
+    functionName: 'getPoolId',
+    args: viewProjectId ? [BigInt(viewProjectId)] : undefined,
+    query: { enabled: false }
+  });
+  const { data: paymentSummaryData, refetch: fetchPaymentSummary } = useReadContract({
+    address: REPAYMENT_ROUTER_ADDRESS,
+    abi: repaymentRouterAbi,
+    functionName: 'getProjectPaymentSummary',
+    args: viewProjectId ? [BigInt(viewProjectId)] : undefined,
+    query: { enabled: false }
   });
 
   // --- HasRole Read Hook (on demand) ---
@@ -148,7 +200,7 @@ export function RepaymentRouterAdmin() {
         } catch (e: unknown) { console.error("Error decoding RoleGranted:", e); setStatusMessage("Error processing RoleGranted event."); }
       });
     },
-    onError: (error) => { console.error('Error watching RoleGranted event:', error); setStatusMessage(`Error watching RoleGranted event: ${error.message}`);}
+    onError: (error) => { console.error('Error watching RoleGranted event:', error); setStatusMessage(`Error watching RoleGranted event: ${error.message}`); }
   });
 
   useWatchContractEvent({
@@ -166,10 +218,50 @@ export function RepaymentRouterAdmin() {
         } catch (e: unknown) { console.error("Error decoding RoleRevoked:", e); setStatusMessage("Error processing RoleRevoked event."); }
       });
     },
-    onError: (error) => { console.error('Error watching RoleRevoked event:', error); setStatusMessage(`Error watching RoleRevoked event: ${error.message}`);}
+    onError: (error) => { console.error('Error watching RoleRevoked event:', error); setStatusMessage(`Error watching RoleRevoked event: ${error.message}`); }
   });
 
-  const refetchAll = useCallback(() => { refetchPaused(); /* also refetch other data */ }, [refetchPaused]);
+  // --- Other Event Watchers ---
+  useWatchContractEvent({
+    address: REPAYMENT_ROUTER_ADDRESS,
+    abi: repaymentRouterAbi,
+    eventName: 'FundingSourceSet',
+    onLogs(logs) {
+      logs.forEach(log => {
+        try {
+          const decoded = decodeEventLog({ abi: repaymentRouterAbi, data: log.data, topics: log.topics, eventName: 'FundingSourceSet' });
+          const args = decoded.args as unknown as FundingSourceSetEventArgs;
+          setRouterEvents(prev => [...prev, args]);
+          setStatusMessage(`FundingSourceSet for Project ${args.projectId.toString()} by ${args.setter}`);
+        } catch (e: unknown) { console.error("Error decoding FundingSourceSet event:", e); }
+      });
+    }
+  });
+
+  useWatchContractEvent({
+    address: REPAYMENT_ROUTER_ADDRESS,
+    abi: repaymentRouterAbi,
+    eventName: 'RepaymentRouted',
+    onLogs(logs) {
+      logs.forEach(log => {
+        try {
+          const decoded = decodeEventLog({ abi: repaymentRouterAbi, data: log.data, topics: log.topics, eventName: 'RepaymentRouted' });
+          const args = decoded.args as unknown as RepaymentRoutedEventArgs;
+          setRouterEvents(prev => [...prev, args]);
+          setStatusMessage(`RepaymentRouted for Project ${args.projectId.toString()} from ${args.payer}`);
+        } catch (e: unknown) { console.error("Error decoding RepaymentRouted event:", e); }
+      });
+    }
+  });
+
+  const refetchAll = useCallback(() => { 
+    refetchPaused(); 
+    if (viewProjectId) {
+      fetchFundingSource();
+      fetchPoolId();
+      fetchPaymentSummary();
+    }
+  }, [refetchPaused, viewProjectId, fetchFundingSource, fetchPoolId, fetchPaymentSummary]);
 
   const handleWrite = (functionName: string, args: unknown[], successMsg?: string) => {
     if (!REPAYMENT_ROUTER_ADDRESS) { setStatusMessage('Contract address not set'); return; }
@@ -200,11 +292,36 @@ export function RepaymentRouterAdmin() {
   const handlePause = () => handleWrite('pause', [], 'Pausing contract...');
   const handleUnpause = () => handleWrite('unpause', [], 'Unpausing contract...');
 
+  const handleViewProjectInfo = () => {
+    if (!viewProjectId) {
+      setStatusMessage("Please enter a Project ID.");
+      return;
+    }
+    fetchFundingSource();
+    fetchPoolId();
+    fetchPaymentSummary();
+  };
+
   useEffect(() => {
     if (isConfirmed) { setStatusMessage(`Success! Hash: ${writeHash}`); refetchAll(); }
     if (writeError) { setStatusMessage(`Transaction Error: ${writeError.message}`); }
     if (receiptError) { setStatusMessage(`Receipt Error: ${receiptError.message}`); }
   }, [isConfirmed, writeHash, writeError, receiptError, refetchAll]);
+
+  useEffect(() => {
+    if (fundingSourceData || poolIdData) {
+      setFundingSourceInfo({
+        source: fundingSourceData as Address | null,
+        poolId: poolIdData as bigint | null
+      });
+    }
+  }, [fundingSourceData, poolIdData]);
+
+  useEffect(() => {
+    if (paymentSummaryData) {
+      setPaymentSummary(paymentSummaryData as PaymentSummary);
+    }
+  }, [paymentSummaryData]);
 
   if (!REPAYMENT_ROUTER_ADDRESS) return <p className="text-red-500 p-4">Error: NEXT_PUBLIC_REPAYMENT_ROUTER_ADDRESS is not set.</p>;
 
@@ -293,10 +410,33 @@ export function RepaymentRouterAdmin() {
         </div>
       </div>
       
+      {/* View Project Info */}
+      <div className="space-y-4 p-4 border rounded bg-gray-50">
+        <h3 className="text-xl font-medium text-black">View Project Routing Info</h3>
+        <div>
+          <label htmlFor="viewProjectId" className="block text-sm font-medium text-black">Project ID:</label>
+          <input type="text" id="viewProjectId" value={viewProjectId} onChange={(e) => { setViewProjectId(e.target.value); setFundingSourceInfo({source: null, poolId: null}); setPaymentSummary(null); }} placeholder="Enter Project ID" className="input-style text-black" />
+        </div>
+        <button onClick={handleViewProjectInfo} disabled={!viewProjectId} className="button-style bg-cyan-500 hover:bg-cyan-600">View Info</button>
+        {fundingSourceInfo.source && (
+          <div className="mt-2 p-2 bg-gray-100 rounded text-sm">
+            <p><strong>Funding Source:</strong> {fundingSourceInfo.source}</p>
+            <p><strong>Pool ID:</strong> {fundingSourceInfo.poolId?.toString() ?? 'N/A'}</p>
+          </div>
+        )}
+        {paymentSummary && (
+          <div className="mt-2 p-2 bg-gray-100 rounded text-sm">
+            <p className="font-semibold"><strong>Payment Summary:</strong></p>
+            <p>Total Repaid: {paymentSummary.totalRepaid?.toString()}</p>
+            <p>Payment Count: {paymentSummary.paymentCount?.toString()}</p>
+            <p>Last Payment: {paymentSummary.lastPayment > 0 ? new Date(Number(paymentSummary.lastPayment) * 1000).toLocaleString() : 'N/A'}</p>
+          </div>
+        )}
+      </div>
+
       <div className="p-4 border rounded bg-gray-100">
           <h3 className="text-xl font-medium text-black">Other Admin Functions</h3>
-          <p className="italic text-gray-700">Placeholder for `processRepayment`. This would typically be called by a developer/system, but admin might need an interface for edge cases.</p>
-          <p className="italic text-gray-700">Consider `registerProject` (if admin needs to manually register after project creation elsewhere).</p>
+          <p className="italic text-gray-700">The `repay` function is called by developers, not admins. `setFundingSource` is called by ProjectFactory/LiquidityPoolManager.</p>
       </div>
 
       {statusMessage && (
@@ -310,22 +450,45 @@ export function RepaymentRouterAdmin() {
           <h3 className="text-xl font-medium text-black mb-3">Recent RoleGranted Events</h3>
           {roleEvents.length === 0 && <p className="text-gray-600">No RoleGranted events detected yet.</p>}
           <ul className="space-y-3">
-            {roleEvents.slice(-5).reverse().map((event, index) => { // Display last 5, newest first
-                const roleName = roleHashMap[event.role] || event.role; // Fallback to hash
-                const eventType = 'sender' in event ? 'RoleGranted' : 'RoleRevoked';
-                return (
-                <li key={index} className="p-3 bg-white border border-gray-200 rounded shadow-sm">
-                    <p className="text-sm text-black"><strong>Event: {eventType}</strong></p>
-                    <p className="text-sm text-black"><strong>Role:</strong> {roleName} ({event.role.substring(0, 10)}...)</p>
-                    <p className="text-sm text-black"><strong>Account:</strong> {event.account}</p>
-                    {(event as RoleGrantedEventArgs).sender && <p className="text-sm text-black"><strong>Sender:</strong> {(event as RoleGrantedEventArgs).sender}</p>}
+            {roleEvents.slice(-5).reverse().map((event, index) => {
+              const roleName = roleHashMap[event.role] || event.role; // Fallback to hash
+              const eventType = 'sender' in event ? 'RoleGranted' : 'RoleRevoked';
+              return (
+                <li key={`role-${index}`} className="p-3 bg-white border border-gray-200 rounded shadow-sm">
+                  <p className="text-sm text-black"><strong>Event: {eventType}</strong></p>
+                  <p className="text-sm text-black"><strong>Role:</strong> {roleName} ({event.role.substring(0, 10)}...)</p>
+                  {'sender' in event && event.sender && <p className="text-sm text-black"><strong>Sender:</strong> {(event as RoleGrantedEventArgs).sender}</p>}
                 </li>
-                );
+              );
             })}
           </ul>
         </div>
       )}
-      {/* Display RepaymentProcessed events if watcher is added */}
+      {routerEvents.length > 0 && (
+        <div className="p-4 border rounded bg-gray-50 mt-6">
+            <h3 className="text-xl font-medium text-black mb-3">Recent Router Events</h3>
+            <ul className="space-y-3">
+                {routerEvents.slice(-5).reverse().map((event, index) => {
+                    if ('setter' in event) { // FundingSourceSet
+                        return (
+                            <li key={`router-event-${index}`} className="p-3 bg-blue-50 border-blue-200 rounded shadow-sm text-xs">
+                                <p><strong>FundingSourceSet:</strong> Project {event.projectId.toString()} set by {event.setter}</p>
+                                <p>Source: {event.fundingSource}, Pool ID: {event.poolId.toString()}</p>
+                            </li>
+                        )
+                    } else { // RepaymentRouted
+                        const e = event as RepaymentRoutedEventArgs;
+                        return (
+                            <li key={`router-event-${index}`} className="p-3 bg-green-50 border-green-200 rounded shadow-sm text-xs">
+                                <p><strong>RepaymentRouted:</strong> Project {e.projectId.toString()} by {e.payer}</p>
+                                <p>Total: {e.totalAmountRepaid.toString()}, Fee: {e.feeAmount.toString()}, Principal: {e.principalAmount.toString()}, Interest: {e.interestAmount.toString()}</p>
+                            </li>
+                        )
+                    }
+                })}
+            </ul>
+        </div>
+      )}
     </div>
   );
 } 

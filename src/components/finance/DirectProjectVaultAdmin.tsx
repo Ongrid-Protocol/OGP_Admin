@@ -2,15 +2,16 @@
 
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
-import { Address, Abi, keccak256, toHex, formatUnits, Hex, decodeEventLog } from 'viem';
+import { Address, Abi, keccak256, toHex, formatUnits, Hex, decodeEventLog, parseUnits } from 'viem';
 import directProjectVaultAbiJson from '@/abis/DirectProjectVault.json';
 import constantsAbiJson from '@/abis/Constants.json';
 
 // Event Argument Types
 type RoleGrantedEventArgs = { role: Hex; account: Address; sender: Address; };
 type RoleRevokedEventArgs = { role: Hex; account: Address; sender: Address; };
-type FundingClosedEventArgs = { totalAssetsInvested: bigint; developer: Address; }; // Adjust based on actual event
-type LoanClosedEventArgs = { totalInterestAccrued: bigint; /* other fields */ }; // Adjust based on actual event
+type FundingClosedEventArgs = { projectId: bigint; totalAssetsInvested: bigint; }; 
+type LoanClosedEventArgs = { projectId: bigint; finalPrincipalRepaid: bigint; finalInterestAccrued: bigint; };
+type RiskParamsUpdatedEventArgs = { projectId: bigint; newAprBps: number; };
 
 const directProjectVaultAbi = directProjectVaultAbiJson.abi;
 const constantsAbi = constantsAbiJson.abi as Abi;
@@ -55,7 +56,11 @@ export function DirectProjectVaultAdmin() {
     isLoanClosed: boolean | undefined;
     currentAprBps: bigint | undefined;
   } | null>(null);
-  const [vaultActionEvents, setVaultActionEvents] = useState<(FundingClosedEventArgs | LoanClosedEventArgs)[]>([]); 
+  const [vaultActionEvents, setVaultActionEvents] = useState<(FundingClosedEventArgs | LoanClosedEventArgs | RiskParamsUpdatedEventArgs)[]>([]); 
+
+  // New state for admin actions
+  const [defaultWriteOffAmount, setDefaultWriteOffAmount] = useState<string>('');
+  const [newAprBps, setNewAprBps] = useState<string>('');
 
   // --- Read Hooks for Vault Details (dynamically enabled) ---
   const { data: totalAssetsData, refetch: fetchTotalAssets, isLoading: isLoadingTotalAssets } = useReadContract({
@@ -64,7 +69,6 @@ export function DirectProjectVaultAdmin() {
     functionName: 'getTotalAssetsInvested',
     query: { enabled: !!vaultAddress }
   });
-  // Add more read hooks for other view functions as needed: getLoanAmount, getPrincipalRepaid, isFundingClosed, etc.
   const { data: isFundingClosedData, refetch: fetchIsFundingClosed } = useReadContract({
     address: vaultAddress, abi: directProjectVaultAbi, functionName: 'isFundingClosed', query: { enabled: !!vaultAddress }
   });
@@ -72,7 +76,7 @@ export function DirectProjectVaultAdmin() {
     address: vaultAddress, abi: directProjectVaultAbi, functionName: 'isLoanClosed', query: { enabled: !!vaultAddress }
   });
   const { data: currentAprData, refetch: fetchCurrentApr } = useReadContract({
-    address: vaultAddress, abi: directProjectVaultAbi, functionName: 'getCurrentAprBps', query: { enabled: !!vaultAddress }
+    address: vaultAddress, abi: directProjectVaultAbi, functionName: 'currentAprBps', query: { enabled: !!vaultAddress }
   });
 
   const { data: hasRoleDataVault, refetch: fetchHasRoleVault, isLoading: isHasRoleLoadingVault } = useReadContract({
@@ -194,11 +198,29 @@ export function DirectProjectVaultAdmin() {
                 });
                 const args = decoded.args as unknown as LoanClosedEventArgs;
                 setVaultActionEvents(prev => [...prev, args]);
-                setStatusMessage(`Vault LoanClosed: Interest Accrued ${formatUnits(args.totalInterestAccrued, 6)} USDC`);
+                setStatusMessage(`Vault LoanClosed: Final Principal ${formatUnits(args.finalPrincipalRepaid, 6)}, Final Interest ${formatUnits(args.finalInterestAccrued, 6)}`);
                 refetchVaultDetails();
-            } catch (e) {
+            } catch (e: unknown) {
                 console.error("Error decoding vault LoanClosed event:", e);
                 setStatusMessage("Error processing vault LoanClosed event.");
+            }
+        });
+    }
+  });
+
+  useWatchContractEvent({
+    address: vaultAddress, abi: directProjectVaultAbi, eventName: 'RiskParamsUpdated',
+    onLogs(logs) {
+        logs.forEach(log => {
+            try {
+                const decoded = decodeEventLog({ abi: directProjectVaultAbi, data: log.data, topics: log.topics, eventName: 'RiskParamsUpdated' });
+                const args = decoded.args as unknown as RiskParamsUpdatedEventArgs;
+                setVaultActionEvents(prev => [...prev, args]);
+                setStatusMessage(`Vault RiskParamsUpdated: New APR ${args.newAprBps}bps`);
+                refetchVaultDetails();
+            } catch (e: unknown) {
+                console.error("Error decoding vault RiskParamsUpdated event:", e);
+                setStatusMessage("Error processing vault RiskParamsUpdated event.");
             }
         });
     }
@@ -273,6 +295,29 @@ export function DirectProjectVaultAdmin() {
     handleWriteToVault('closeLoan', [], 'Closing loan...');
   };
 
+  const handleLoanDefault = () => {
+    if (!defaultWriteOffAmount) { setStatusMessage('Write-off amount is required.'); return; }
+    try {
+        const amountWei = parseUnits(defaultWriteOffAmount, 6); // Assuming USDC decimals
+        handleWriteToVault('handleLoanDefault', [amountWei], 'Handling loan default...');
+    } catch (e: unknown) {
+        if (e instanceof Error) setStatusMessage(`Error: ${e.message}`);
+        else setStatusMessage('An unknown error occurred.');
+    }
+  };
+
+  const handleUpdateRiskParams = () => {
+    if (!newAprBps) { setStatusMessage('New APR is required.'); return; }
+    try {
+        const apr = parseInt(newAprBps, 10);
+        if (isNaN(apr)) { setStatusMessage('Invalid APR value.'); return; }
+        handleWriteToVault('updateRiskParams', [apr], 'Updating risk parameters...');
+    } catch (e: unknown) {
+        if (e instanceof Error) setStatusMessage(`Error: ${e.message}`);
+        else setStatusMessage('An unknown error occurred.');
+    }
+  };
+
   useEffect(() => {
     if (isConfirmed) { setStatusMessage(`Vault Tx Successful: ${writeHash?.substring(0,10)}...`); refetchVaultDetails(); }
     if (writeError) { setStatusMessage(`Vault Tx Error: ${writeError.message}`); }
@@ -323,6 +368,22 @@ export function DirectProjectVaultAdmin() {
                 <button onClick={handleCloseFundingManually} disabled={isWritePending || isConfirming || vaultDetails?.isFundingClosed} className="button-style bg-yellow-500 hover:bg-yellow-600">Close Funding Manually</button>
                 <button onClick={handleCloseLoan} disabled={isWritePending || isConfirming || vaultDetails?.isLoanClosed || !vaultDetails?.isFundingClosed} className="button-style bg-green-500 hover:bg-green-600">Close Loan (if repaid)</button>
             </div>
+            <div className="mt-4 pt-4 border-t">
+                <label className="block text-sm font-medium">Handle Loan Default (Write-off Amount):</label>
+                <input type="text" value={defaultWriteOffAmount} onChange={e => setDefaultWriteOffAmount(e.target.value)} placeholder="Amount to write off (USDC)" className="input-style text-black" />
+                <button onClick={handleLoanDefault} disabled={isWritePending || isConfirming || !defaultWriteOffAmount} className="button-style bg-red-600 hover:bg-red-700 mt-1">Handle Default</button>
+            </div>
+          </div>
+
+          {/* Update Risk Params */}
+          <div className="space-y-4 p-4 border rounded bg-gray-50">
+            <h3 className="text-xl font-medium text-black">Update Risk Parameters</h3>
+            <p className="text-sm text-gray-700">Requires RISK_ORACLE_ROLE on this specific vault.</p>
+            <div>
+              <label className="block text-sm font-medium">New APR (BPS):</label>
+              <input type="number" value={newAprBps} onChange={e => setNewAprBps(e.target.value)} placeholder="e.g., 1250 for 12.5%" className="input-style text-black" />
+            </div>
+            <button onClick={handleUpdateRiskParams} disabled={isWritePending || isConfirming || !newAprBps} className="button-style bg-purple-500 hover:bg-purple-600">Update Risk Params</button>
           </div>
 
           {/* Role Management for this Vault */}
@@ -371,15 +432,18 @@ export function DirectProjectVaultAdmin() {
               {vaultActionEvents.length === 0 && <p className="text-xs text-gray-500">No action events for this vault.</p>}
               <ul className="text-xs space-y-1">
                 {vaultActionEvents
-                .slice(-5).reverse().map((event: FundingClosedEventArgs | LoanClosedEventArgs, i) => {
+                .slice(-5).reverse().map((event, i) => {
                   let eventName = 'Unknown Event';
                   let eventDetails = '';
                   if ('totalAssetsInvested' in event) {
                     eventName = 'FundingClosed';
-                    eventDetails = `Total Invested: ${formatUnits(event.totalAssetsInvested, 6)} USDC, Dev: ${event.developer.substring(0,6)}...`;
-                  } else if ('totalInterestAccrued' in event) {
+                    eventDetails = `Total Invested: ${formatUnits(event.totalAssetsInvested, 6)} USDC`;
+                  } else if ('finalPrincipalRepaid' in event) {
                     eventName = 'LoanClosed';
-                    eventDetails = `Total Interest: ${formatUnits(event.totalInterestAccrued, 6)} USDC`;
+                    eventDetails = `Final Principal: ${formatUnits(event.finalPrincipalRepaid, 6)}`;
+                  } else if ('newAprBps' in event) {
+                      eventName = 'RiskParamsUpdated';
+                      eventDetails = `New APR: ${event.newAprBps}bps`;
                   }
                   return <li key={`vaction-${i}`}>{`${eventName}: ${eventDetails}`}</li>
                 })}
