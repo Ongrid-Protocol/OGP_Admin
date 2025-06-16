@@ -150,18 +150,25 @@ export function RepaymentRouterAdmin() {
 
   useEffect(() => {
     if (selectedRoleName) {
-      try {
-        setSelectedRoleBytes32(keccak256(toHex(selectedRoleName)));
+      if (selectedRoleName === 'DEFAULT_ADMIN_ROLE') {
+        setSelectedRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
         setStatusMessage('');
-      } catch (e: unknown) { 
-        setSelectedRoleBytes32(null); 
-        if (e instanceof Error) {
-            setStatusMessage(`Error computing role hash: ${e.message}`);
-        } else {
-            setStatusMessage('An unknown error occurred while computing role hash.');
+      } else {
+        try {
+          setSelectedRoleBytes32(keccak256(toHex(selectedRoleName)));
+          setStatusMessage('');
+        } catch (e: unknown) { 
+          setSelectedRoleBytes32(null); 
+          if (e instanceof Error) {
+              setStatusMessage(`Error computing role hash: ${e.message}`);
+          } else {
+              setStatusMessage('An unknown error occurred while computing role hash.');
+          }
         }
       }
-    } else { setSelectedRoleBytes32(null); }
+    } else { 
+      setSelectedRoleBytes32(null); 
+    }
   }, [selectedRoleName]);
 
   useEffect(() => {
@@ -182,7 +189,9 @@ export function RepaymentRouterAdmin() {
           }
         }
       }
-    } else { setCheckRoleBytes32(null); }
+    } else { 
+      setCheckRoleBytes32(null); 
+    }
   }, [checkRoleName]);
 
   useWatchContractEvent({

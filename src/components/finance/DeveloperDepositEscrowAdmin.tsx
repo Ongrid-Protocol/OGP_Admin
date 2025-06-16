@@ -161,18 +161,23 @@ export function DeveloperDepositEscrowAdmin() {
 
   useEffect(() => {
     if (selectedRoleName) {
-      try {
-        const roleHex = toHex(selectedRoleName);
-        const roleHash = keccak256(roleHex);
-        setSelectedRoleBytes32(roleHash);
+      if (selectedRoleName === 'DEFAULT_ADMIN_ROLE') {
+        setSelectedRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
         setStatusMessage('');
-      } catch (e: unknown) {
-        console.error("Error computing role hash:", e);
-        setSelectedRoleBytes32(null);
-        if (e instanceof Error) {
-            setStatusMessage(`Error computing role hash: ${e.message}`);
-        } else {
-            setStatusMessage('An unknown error occurred while computing role hash.');
+      } else {
+        try {
+          const roleHex = toHex(selectedRoleName);
+          const roleHash = keccak256(roleHex);
+          setSelectedRoleBytes32(roleHash);
+          setStatusMessage('');
+        } catch (e: unknown) {
+          console.error("Error computing role hash:", e);
+          setSelectedRoleBytes32(null);
+          if (e instanceof Error) {
+              setStatusMessage(`Error computing role hash: ${e.message}`);
+          } else {
+              setStatusMessage('An unknown error occurred while computing role hash.');
+          }
         }
       }
     } else {

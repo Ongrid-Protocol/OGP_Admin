@@ -91,28 +91,40 @@ export function PausableGovernorAdmin() {
 
   useEffect(() => {
     if (selectedRoleName) {
-      try {
-        setSelectedRoleBytes32(selectedRoleName === 'DEFAULT_ADMIN_ROLE' ? '0x0000000000000000000000000000000000000000000000000000000000000000' : keccak256(toHex(selectedRoleName)));
-      } catch (e: unknown) { 
-        console.error("Error computing role hash:", e); 
-        setSelectedRoleBytes32(null);
-        if (e instanceof Error) setStatusMessage(`Error computing role hash: ${e.message}`);
-        else setStatusMessage('Unknown error computing role hash.');
-       }
-    } else { setSelectedRoleBytes32(null); }
+      if (selectedRoleName === 'DEFAULT_ADMIN_ROLE') {
+        setSelectedRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
+      } else {
+        try {
+          setSelectedRoleBytes32(keccak256(toHex(selectedRoleName)));
+        } catch (e: unknown) { 
+          console.error("Error computing role hash:", e); 
+          setSelectedRoleBytes32(null);
+          if (e instanceof Error) setStatusMessage(`Error computing role hash: ${e.message}`);
+          else setStatusMessage('Unknown error computing role hash.');
+         }
+      }
+    } else { 
+      setSelectedRoleBytes32(null); 
+    }
   }, [selectedRoleName]);
 
   useEffect(() => {
     if (checkRoleName) {
-      try {
-        setCheckRoleBytes32(checkRoleName === 'DEFAULT_ADMIN_ROLE' ? '0x0000000000000000000000000000000000000000000000000000000000000000' : keccak256(toHex(checkRoleName)));
-      } catch (e: unknown) { 
-        console.error("Error computing check role hash:", e); 
-        setCheckRoleBytes32(null); 
-        if (e instanceof Error) setStatusMessage(`Error computing check role hash: ${e.message}`);
-        else setStatusMessage('Unknown error computing check role hash.');
+      if (checkRoleName === 'DEFAULT_ADMIN_ROLE') {
+        setCheckRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
+      } else {
+        try {
+          setCheckRoleBytes32(keccak256(toHex(checkRoleName)));
+        } catch (e: unknown) { 
+          console.error("Error computing check role hash:", e); 
+          setCheckRoleBytes32(null); 
+          if (e instanceof Error) setStatusMessage(`Error computing check role hash: ${e.message}`);
+          else setStatusMessage('Unknown error computing check role hash.');
+        }
       }
-    } else { setCheckRoleBytes32(null); }
+    } else { 
+      setCheckRoleBytes32(null); 
+    }
   }, [checkRoleName]);
   
   useEffect(() => { if (hasRoleData !== undefined) setHasRoleResult(hasRoleData as boolean); }, [hasRoleData]);

@@ -95,10 +95,19 @@ export function DirectProjectVaultAdmin() {
 
   useEffect(() => {
     if (selectedRoleName) {
-      try {
-        setSelectedRoleBytes32(selectedRoleName === 'DEFAULT_ADMIN_ROLE' ? '0x0000000000000000000000000000000000000000000000000000000000000000' : keccak256(toHex(selectedRoleName)));
-      } catch (e) { console.error("Error computing role hash:", e); setSelectedRoleBytes32(null); }
-    } else { setSelectedRoleBytes32(null); }
+      if (selectedRoleName === 'DEFAULT_ADMIN_ROLE') {
+        setSelectedRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
+      } else {
+        try {
+          setSelectedRoleBytes32(keccak256(toHex(selectedRoleName)));
+        } catch (e) { 
+          console.error("Error computing role hash:", e); 
+          setSelectedRoleBytes32(null); 
+        }
+      }
+    } else { 
+      setSelectedRoleBytes32(null); 
+    }
   }, [selectedRoleName]);
 
   useEffect(() => {
