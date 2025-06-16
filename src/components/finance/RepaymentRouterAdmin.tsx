@@ -341,12 +341,12 @@ export function RepaymentRouterAdmin() {
             <label htmlFor="grantRoleAddressRR" className="block text-sm font-medium text-black">Address to Grant Role:</label>
             <input type="text" id="grantRoleAddressRR" value={grantRoleToAddress} onChange={(e) => setGrantRoleToAddress(e.target.value)} placeholder="0x... (e.g., ProjectFactory for PROJECT_HANDLER_ROLE)" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black placeholder-gray-500" />
         </div>
-        <button onClick={handleGrantRole} disabled={!selectedRoleName || !grantRoleToAddress || isWritePending || isConfirming} className="px-4 py-2 bg-orange-500 text-white rounded hover:bg-orange-600 disabled:bg-gray-400 disabled:cursor-not-allowed">Grant Role</button>
+        <button onClick={handleGrantRole} disabled={!selectedRoleBytes32 || !grantRoleToAddress || isWritePending || isConfirming} className="px-4 py-2 bg-orange-500 text-white rounded hover:bg-orange-600 disabled:bg-gray-400 disabled:cursor-not-allowed">Grant Role</button>
         <div className="mt-4">
             <label htmlFor="revokeRoleAddressRR" className="block text-sm font-medium text-black">Address to Revoke Role From:</label>
             <input type="text" id="revokeRoleAddressRR" value={revokeRoleFromAddress} onChange={(e) => setRevokeRoleFromAddress(e.target.value)} placeholder="0x..." className="mt-1 block w-full input-style text-black" />
         </div>
-        <button onClick={handleRevokeRole} disabled={!selectedRoleName || !revokeRoleFromAddress || isWritePending || isConfirming} className="mt-2 px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 disabled:bg-gray-400">Revoke Role</button>
+        <button onClick={handleRevokeRole} disabled={!selectedRoleBytes32 || !revokeRoleFromAddress || isWritePending || isConfirming} className="mt-2 px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 disabled:bg-gray-400">Revoke Role</button>
       </div>
 
       {/* Check Role Section */}

@@ -276,7 +276,7 @@ export function ProjectFactoryAdmin() {
   };
 
   const handleCheckHasRole = () => {
-    if (!checkRoleBytes32) { setHasRoleStatus('Please select a role.'); setHasRoleResult(null); return; }
+    if (!checkRoleName) { setHasRoleStatus('Please select a role.'); setHasRoleResult(null); return; }
     if (!checkRoleAccountAddress) { setHasRoleStatus('Please enter account address to check role.'); setHasRoleResult(null); return; }
     setHasRoleStatus('Checking role...');
     setHasRoleResult(null); // Clear previous result

@@ -1,4 +1,4 @@
-import { Hex, keccak256, toHex } from 'viem';
+import { Hex, keccak256, toBytes } from 'viem';
 
 /**
  * The zero hash used for DEFAULT_ADMIN_ROLE in OpenZeppelin AccessControl
@@ -16,7 +16,8 @@ export function computeRoleHash(roleName: string): Hex {
   }
   
   try {
-    return keccak256(toHex(roleName));
+    // Hash the raw UTF-8 bytes of the string, matching OpenZeppelin's AccessControl
+    return keccak256(toBytes(roleName));
   } catch (error) {
     console.error(`Error computing hash for role ${roleName}:`, error);
     throw error;
@@ -37,8 +38,10 @@ export function createRoleHashMap(roleNames: readonly string[]): { [hash: Hex]: 
     }
   });
   
-  // Add DEFAULT_ADMIN_ROLE with special label
-  hashMap[DEFAULT_ADMIN_ROLE_HASH] = 'DEFAULT_ADMIN_ROLE (Direct 0x00)';
+  // Only add DEFAULT_ADMIN_ROLE if not already present
+  if (!(DEFAULT_ADMIN_ROLE_HASH in hashMap)) {
+    hashMap[DEFAULT_ADMIN_ROLE_HASH] = 'DEFAULT_ADMIN_ROLE (Direct 0x00)';
+  }
   
   return hashMap;
 }

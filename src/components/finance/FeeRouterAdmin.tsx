@@ -75,14 +75,18 @@ export function FeeRouterAdmin() {
   const [projectFeeDetails, setProjectFeeDetails] = useState<ProjectFeeDetails | null>(null);
   const [nextPaymentInfo, setNextPaymentInfo] = useState<NextPaymentInfo | null>(null);
 
-  // Memoize role hash computations
+  // State for error handling in useMemo
+  const [roleHashError, setRoleHashError] = useState<string>('');
+  const [checkRoleHashError, setCheckRoleHashError] = useState<string>('');
+
+  // Memoize role hash computations (pure functions only)
   const selectedRoleBytes32 = useMemo(() => {
     if (!selectedRoleName) return null;
     try {
         return computeRoleHash(selectedRoleName);
     } catch (error) {
         const message = error instanceof Error ? error.message : 'Unknown error';
-        setStatusMessage(`Error computing role hash: ${message}`);
+        setRoleHashError(message);
         return null;
     }
   }, [selectedRoleName]);
@@ -93,7 +97,7 @@ export function FeeRouterAdmin() {
           return computeRoleHash(checkRoleName);
       } catch (error) {
           const message = error instanceof Error ? error.message : 'Unknown error';
-          setHasRoleStatus(`Error computing check role hash: ${message}`);
+          setCheckRoleHashError(message);
           return null;
       }
   }, [checkRoleName]);
@@ -153,15 +157,21 @@ export function FeeRouterAdmin() {
   useEffect(() => {
     if (selectedRoleName) {
       setStatusMessage('');
+      if (roleHashError) {
+        setStatusMessage(`Error computing role hash: ${roleHashError}`);
+      }
     }
-  }, [selectedRoleName]);
+  }, [selectedRoleName, roleHashError]);
 
   useEffect(() => {
     if (checkRoleName) {
       setHasRoleStatus('');
       setHasRoleResult(null);
+      if (checkRoleHashError) {
+        setHasRoleStatus(`Error computing check role hash: ${checkRoleHashError}`);
+      }
     }
-  }, [checkRoleName]);
+  }, [checkRoleName, checkRoleHashError]);
 
   useEffect(() => {
     if (hasRoleData !== undefined) {
