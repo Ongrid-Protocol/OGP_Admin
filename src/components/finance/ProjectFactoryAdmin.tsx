@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
-import { Address, Abi, decodeEventLog, Hex, keccak256, toHex } from 'viem';
+import { Address, Abi, decodeEventLog, Hex } from 'viem';
 import projectFactoryAbiJson from '@/abis/ProjectFactory.json';
 import constantsAbiJson from '@/abis/Constants.json';
+import { computeRoleHash, createRoleHashMap, getRoleNamesFromAbi } from '@/utils/crypto';
 
 type RoleGrantedEventArgs = { role: Hex; account: Address; sender: Address; };
 type RoleRevokedEventArgs = { role: Hex; account: Address; sender: Address; };
@@ -32,26 +33,6 @@ const PROJECT_FACTORY_ADDRESS = process.env.NEXT_PUBLIC_PROJECT_FACTORY_ADDRESS 
 const projectFactoryAbi = projectFactoryAbiJson.abi;
 const constantsAbi = constantsAbiJson.abi as Abi;
 
-const getRoleNamesFromAbi = (abi: Abi): string[] => {
-  return abi
-    .filter(item => item.type === 'function' && item.outputs?.length === 1 && item.outputs[0].type === 'bytes32' && item.inputs?.length === 0)
-    .map(item => (item as { name: string }).name);
-};
-
-// Helper to create a mapping from role hash to role name
-const createRoleHashMap = (roleNames: string[]): { [hash: Hex]: string } => {
-  const hashMap: { [hash: Hex]: string } = {};
-  roleNames.forEach(name => {
-    try {
-      hashMap[keccak256(toHex(name))] = name;
-    } catch (e) {
-      console.error(`Error creating hash for role ${name}:`, e);
-    }
-  });
-  hashMap['0x0000000000000000000000000000000000000000000000000000000000000000'] = 'DEFAULT_ADMIN_ROLE (Direct 0x00)';
-  return hashMap;
-};
-
 export function ProjectFactoryAdmin() {
   const {} = useAccount(); // connectedAddress removed
   const { data: writeHash, writeContract, isPending: isWritePending, error: writeError } = useWriteContract();
@@ -74,7 +55,6 @@ export function ProjectFactoryAdmin() {
 
   const [roleNames, setRoleNames] = useState<string[]>([]);
   const [selectedRoleName, setSelectedRoleName] = useState<string>('');
-  const [selectedRoleBytes32, setSelectedRoleBytes32] = useState<Hex | null>(null);
   const [grantRoleToAddress, setGrantRoleToAddress] = useState<string>('');
   const [revokeRoleFromAddress, setRevokeRoleFromAddress] = useState<string>('');
   const [roleEvents, setRoleEvents] = useState<(RoleGrantedEventArgs | RoleRevokedEventArgs)[]>([]);
@@ -85,10 +65,36 @@ export function ProjectFactoryAdmin() {
 
   // State for HasRole Check
   const [checkRoleName, setCheckRoleName] = useState<string>('');
-  const [checkRoleBytes32, setCheckRoleBytes32] = useState<Hex | null>(null);
   const [checkRoleAccountAddress, setCheckRoleAccountAddress] = useState<string>('');
   const [hasRoleResult, setHasRoleResult] = useState<boolean | string | null>(null);
   const [hasRoleStatus, setHasRoleStatus] = useState<string>('');
+
+  // Memoize role hash computations
+  const selectedRoleBytes32 = useMemo(() => {
+    if (!selectedRoleName) return null;
+    
+    try {
+      return computeRoleHash(selectedRoleName);
+    } catch (error) {
+      console.error("Error computing role hash:", error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      setStatusMessage(`Error computing role hash: ${errorMessage}`);
+      return null;
+    }
+  }, [selectedRoleName]);
+
+  const checkRoleBytes32 = useMemo(() => {
+    if (!checkRoleName) return null;
+    
+    try {
+      return computeRoleHash(checkRoleName);
+    } catch (error) {
+      console.error("Error computing check role hash:", error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      setHasRoleStatus(`Error computing role hash for check: ${errorMessage}`);
+      return null;
+    }
+  }, [checkRoleName]);
 
   const { data: pausedData, refetch: refetchPaused } = useReadContract({
     address: PROJECT_FACTORY_ADDRESS, abi: projectFactoryAbi, functionName: 'paused',
@@ -142,49 +148,17 @@ export function ProjectFactoryAdmin() {
 
   useEffect(() => {
     if (selectedRoleName) {
-      if (selectedRoleName === 'DEFAULT_ADMIN_ROLE') {
-        setSelectedRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
-        setStatusMessage('');
-      } else {
-        try {
-          setSelectedRoleBytes32(keccak256(toHex(selectedRoleName)));
-          setStatusMessage('');
-        } catch (e: unknown) { 
-          setSelectedRoleBytes32(null); 
-          if (e instanceof Error) {
-              setStatusMessage(`Error computing role hash: ${e.message}`);
-          } else {
-              setStatusMessage('An unknown error occurred while computing role hash.');
-          }
-        }
-      }
-    } else { 
-      setSelectedRoleBytes32(null); 
+      setStatusMessage('');
     }
   }, [selectedRoleName]);
 
   useEffect(() => {
     if (checkRoleName) {
-      if (checkRoleName === 'DEFAULT_ADMIN_ROLE') {
-        setCheckRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
-        setHasRoleStatus('');
-      } else {
-        try {
-          setCheckRoleBytes32(keccak256(toHex(checkRoleName)));
-          setHasRoleStatus('');
-        } catch (e: unknown) { 
-          setCheckRoleBytes32(null); 
-          if (e instanceof Error) {
-            setHasRoleStatus(`Error computing role hash for check: ${e.message}`); 
-          } else {
-            setHasRoleStatus('An unknown error occurred while computing role hash for check.');
-          }
-        }
-      }
-    } else { 
-      setCheckRoleBytes32(null); 
+      setHasRoleStatus('Checking role...');
+      setHasRoleResult(null); // Clear previous result
+      fetchHasRole();
     }
-  }, [checkRoleName]);
+  }, [checkRoleName, fetchHasRole]);
 
   useWatchContractEvent({
     address: PROJECT_FACTORY_ADDRESS, abi: projectFactoryAbi, eventName: 'RoleGranted',
@@ -196,7 +170,10 @@ export function ProjectFactoryAdmin() {
           const roleName = roleHashMap[args.role] || args.role; // Fallback to hash
           setRoleEvents(prev => [...prev, args]);
           setStatusMessage(`RoleGranted Event: Role ${roleName} (${args.role.substring(0,10)}...) granted to ${args.account}`);
-        } catch (e: unknown) { console.error("Error decoding RoleGranted:", e); setStatusMessage("Error processing RoleGranted event."); }
+        } catch (error) { 
+          console.error("Error decoding RoleGranted:", error); 
+          setStatusMessage("Error processing RoleGranted event."); 
+        }
       });
     },
     onError: (error) => { console.error('Error watching RoleGranted event:', error); setStatusMessage(`Error watching RoleGranted event: ${error.message}`); }
@@ -212,7 +189,10 @@ export function ProjectFactoryAdmin() {
           const roleName = roleHashMap[args.role] || args.role;
           setRoleEvents(prev => [...prev, args]);
           setStatusMessage(`RoleRevoked Event: Role ${roleName} (${args.role.substring(0,10)}...) revoked from ${args.account}`);
-        } catch (e: unknown) { console.error("Error decoding RoleRevoked:", e); setStatusMessage("Error processing RoleRevoked event."); }
+        } catch (error) { 
+          console.error("Error decoding RoleRevoked:", error); 
+          setStatusMessage("Error processing RoleRevoked event."); 
+        }
       });
     },
     onError: (error) => { console.error('Error watching RoleRevoked event:', error); setStatusMessage(`Error watching RoleRevoked event: ${error.message}`); }
@@ -227,7 +207,10 @@ export function ProjectFactoryAdmin() {
           const args = decoded.args as unknown as ProjectCreatedEventArgs;
           setProjectEvents(prev => [...prev, args]);
           setStatusMessage(`Event: ProjectCreated ${args.projectId.toString()}`);
-        } catch (e: unknown) { console.error("Error decoding ProjectCreated:", e); setStatusMessage("Error processing event."); }
+        } catch (error) { 
+          console.error("Error decoding ProjectCreated:", error); 
+          setStatusMessage("Error processing event."); 
+        }
       });
     }
   });
@@ -241,7 +224,10 @@ export function ProjectFactoryAdmin() {
           const args = decoded.args as unknown as AddressesSetEventArgs;
           setAddressesSetEvents(prev => [...prev, args]);
           setStatusMessage(`Event: AddressesSet - LPM: ${args.poolManager?.substring(0,10)}...`);
-        } catch (e: unknown) { console.error("Error decoding AddressesSet:", e); setStatusMessage("Error processing AddressesSet event."); }
+        } catch (error) { 
+          console.error("Error decoding AddressesSet:", error); 
+          setStatusMessage("Error processing AddressesSet event."); 
+        }
       });
     }
   });
@@ -255,7 +241,7 @@ export function ProjectFactoryAdmin() {
         setHasRoleResult(`Error: ${hasRoleError.message}`);
         setHasRoleStatus('');
     }
-  }, [hasRoleData, hasRoleError]);
+  }, [hasRoleData, hasRoleError, fetchHasRole]);
 
   const refetchAll = useCallback(() => { 
     refetchPaused(); 
@@ -290,7 +276,7 @@ export function ProjectFactoryAdmin() {
   };
 
   const handleCheckHasRole = () => {
-    if (!checkRoleBytes32) { setHasRoleStatus('Selected role for check is invalid or hash not computed.'); setHasRoleResult(null); return; }
+    if (!checkRoleBytes32) { setHasRoleStatus('Please select a role.'); setHasRoleResult(null); return; }
     if (!checkRoleAccountAddress) { setHasRoleStatus('Please enter account address to check role.'); setHasRoleResult(null); return; }
     setHasRoleStatus('Checking role...');
     setHasRoleResult(null); // Clear previous result
@@ -332,6 +318,27 @@ export function ProjectFactoryAdmin() {
     if (writeError) { setStatusMessage(`Transaction Error: ${writeError.message}`); }
     if (receiptError) { setStatusMessage(`Receipt Error: ${receiptError.message}`); }
   }, [isConfirmed, writeHash, writeError, receiptError, refetchAll]);
+
+  // Update effects
+  useEffect(() => { 
+    const names = getRoleNamesFromAbi(constantsAbi);
+    setRoleNames(names);
+    setRoleHashMap(createRoleHashMap(names));
+  }, []);
+
+  // Clear status messages
+  useEffect(() => {
+    if (selectedRoleName) {
+      setStatusMessage('');
+    }
+  }, [selectedRoleName]);
+
+  useEffect(() => {
+    if (checkRoleName) {
+      setHasRoleStatus('');
+      setHasRoleResult(null);
+    }
+  }, [checkRoleName]);
 
   if (!PROJECT_FACTORY_ADDRESS) return <p className="text-red-500 p-4">Error: NEXT_PUBLIC_PROJECT_FACTORY_ADDRESS is not set.</p>;
 

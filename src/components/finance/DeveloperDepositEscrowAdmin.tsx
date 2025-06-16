@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
-import { Address, Abi, decodeEventLog, Hex, keccak256, toHex } from 'viem';
+import { Address, Abi, decodeEventLog, Hex } from 'viem';
 import developerDepositEscrowAbiJson from '@/abis/DeveloperDepositEscrow.json';
 import constantsAbiJson from '@/abis/Constants.json';
+import { computeRoleHash, createRoleHashMap, getRoleNamesFromAbi } from '@/utils/crypto';
 
 // Define proper types for the event args
 type RoleGrantedEventArgs = {
@@ -44,35 +45,6 @@ const DEVELOPER_DEPOSIT_ESCROW_ADDRESS = process.env.NEXT_PUBLIC_DEVELOPER_DEPOS
 const developerDepositEscrowAbi = developerDepositEscrowAbiJson.abi;
 const constantsAbi = constantsAbiJson.abi as Abi;
 
-// Helper to identify role-defining functions from Constants.json
-const getRoleNamesFromAbi = (abi: Abi): string[] => {
-  return abi
-    .filter(item => item.type === 'function' && item.outputs?.length === 1 && item.outputs[0].type === 'bytes32' && item.inputs?.length === 0)
-    .map(item => (item as { name: string }).name);
-};
-
-// Helper to create a mapping from role hash to role name
-const createRoleHashMap = (roleNames: string[]): { [hash: Hex]: string } => {
-  const hashMap: { [hash: Hex]: string } = {};
-  roleNames.forEach(name => {
-    try {
-      // Important: This assumes roles are identified by keccak256 of their string name.
-      // If contracts use a different method (e.g., direct bytes32 values not derived from name string),
-      // this mapping approach needs to be adjusted.
-      hashMap[keccak256(toHex(name))] = name;
-    } catch (e) {
-      console.error(`Error creating hash for role ${name}:`, e);
-    }
-  });
-  // Add DEFAULT_ADMIN_ROLE specifically if it's 0x00...00
-  // The keccak256 of "DEFAULT_ADMIN_ROLE" is not 0x00. OpenZeppelin's DEFAULT_ADMIN_ROLE is bytes32(0).
-  // We need to confirm how DEFAULT_ADMIN_ROLE is stored and compared.
-  // For now, we'll rely on the keccak256 approach for consistency with grantRole.
-  // If DEFAULT_ADMIN_ROLE is special (e.g. 0x00), it will need specific handling for display.
-  hashMap['0x0000000000000000000000000000000000000000000000000000000000000000'] = 'DEFAULT_ADMIN_ROLE (Direct 0x00)';
-  return hashMap;
-};
-
 export function DeveloperDepositEscrowAdmin() {
   const { } = useAccount(); // connectedAddress removed as it was unused
   const { data: writeHash, writeContract, isPending: isWritePending, error: writeError } = useWriteContract();
@@ -85,7 +57,6 @@ export function DeveloperDepositEscrowAdmin() {
   // State for Role Granting
   const [roleNames, setRoleNames] = useState<string[]>([]);
   const [selectedRoleName, setSelectedRoleName] = useState<string>('');
-  const [selectedRoleBytes32, setSelectedRoleBytes32] = useState<Hex | null>(null);
   const [grantRoleToAddress, setGrantRoleToAddress] = useState<string>('');
   const [revokeRoleFromAddress, setRevokeRoleFromAddress] = useState<string>('');
   const [roleEvents, setRoleEvents] = useState<(RoleGrantedEventArgs | RoleRevokedEventArgs)[]>([]);
@@ -95,7 +66,6 @@ export function DeveloperDepositEscrowAdmin() {
 
   // State for HasRole Check
   const [checkRoleName, setCheckRoleName] = useState<string>('');
-  const [checkRoleBytes32, setCheckRoleBytes32] = useState<Hex | null>(null);
   const [checkRoleAccountAddress, setCheckRoleAccountAddress] = useState<string>('');
   const [hasRoleResult, setHasRoleResult] = useState<boolean | string | null>(null);
   const [hasRoleStatus, setHasRoleStatus] = useState<string>('');
@@ -105,6 +75,29 @@ export function DeveloperDepositEscrowAdmin() {
   const [slashFeeRecipient, setSlashFeeRecipient] = useState<string>('');
   const [viewDepositProjectId, setViewDepositProjectId] = useState<string>('');
   const [depositInfo, setDepositInfo] = useState<DepositInfo | null>(null);
+
+  // Memoize role hash computations
+  const selectedRoleBytes32 = useMemo(() => {
+    if (!selectedRoleName) return null;
+    
+    try {
+      return computeRoleHash(selectedRoleName);
+    } catch (error) {
+      console.error("Error computing role hash:", error);
+      return null;
+    }
+  }, [selectedRoleName]);
+
+  const checkRoleBytes32 = useMemo(() => {
+    if (!checkRoleName) return null;
+    
+    try {
+      return computeRoleHash(checkRoleName);
+    } catch (error) {
+      console.error("Error computing check role hash:", error);
+      return null;
+    }
+  }, [checkRoleName]);
 
   // --- Read Hooks ---
   const { data: pausedData, refetch: refetchPaused } = useReadContract({
@@ -161,53 +154,14 @@ export function DeveloperDepositEscrowAdmin() {
 
   useEffect(() => {
     if (selectedRoleName) {
-      if (selectedRoleName === 'DEFAULT_ADMIN_ROLE') {
-        setSelectedRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
-        setStatusMessage('');
-      } else {
-        try {
-          const roleHex = toHex(selectedRoleName);
-          const roleHash = keccak256(roleHex);
-          setSelectedRoleBytes32(roleHash);
-          setStatusMessage('');
-        } catch (e: unknown) {
-          console.error("Error computing role hash:", e);
-          setSelectedRoleBytes32(null);
-          if (e instanceof Error) {
-              setStatusMessage(`Error computing role hash: ${e.message}`);
-          } else {
-              setStatusMessage('An unknown error occurred while computing role hash.');
-          }
-        }
-      }
-    } else {
-      setSelectedRoleBytes32(null);
+      setStatusMessage('');
     }
   }, [selectedRoleName]);
 
   useEffect(() => {
     if (checkRoleName) {
-      if (checkRoleName === 'DEFAULT_ADMIN_ROLE') {
-        setCheckRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
-        setHasRoleStatus('');
-      } else {
-        try {
-          const roleHex = toHex(checkRoleName);
-          const roleHash = keccak256(roleHex);
-          setCheckRoleBytes32(roleHash);
-          setHasRoleStatus('');
-        } catch (e: unknown) {
-          console.error("Error computing check role hash:", e);
-          setCheckRoleBytes32(null);
-          if (e instanceof Error) {
-            setHasRoleStatus(`Error computing role hash for check: ${e.message}`);
-          } else {
-            setHasRoleStatus('An unknown error occurred while computing check role hash.');
-          }
-        }
-      }
-    } else {
-      setCheckRoleBytes32(null);
+      setHasRoleStatus('');
+      setHasRoleResult(null);
     }
   }, [checkRoleName]);
 
@@ -407,7 +361,7 @@ export function DeveloperDepositEscrowAdmin() {
   };
 
   const handleCheckHasRole = () => {
-    if (!checkRoleBytes32) {
+    if (!checkRoleName) {
       setHasRoleStatus('Selected role for check is invalid or hash not computed.');
       setHasRoleResult(null);
       return;
@@ -526,7 +480,6 @@ export function DeveloperDepositEscrowAdmin() {
               <option key={name} value={name}>{name}</option>
             ))}
           </select>
-          {selectedRoleName && <p className="text-xs text-gray-600 mt-1">Computed Role Hash: {selectedRoleBytes32 || (selectedRoleName ? 'Calculating...' : 'N/A')}</p>}
         </div>
         <div>
           <label htmlFor="grantRoleAddressDDE" className="block text-sm font-medium text-black">Address to Grant Role:</label>
@@ -541,7 +494,7 @@ export function DeveloperDepositEscrowAdmin() {
         </div>
         <button
           onClick={handleGrantRole}
-          disabled={!selectedRoleBytes32 || !grantRoleToAddress || isWritePending || isConfirming}
+          disabled={!selectedRoleName || !grantRoleToAddress || isWritePending || isConfirming}
           className="px-4 py-2 bg-orange-500 text-white rounded hover:bg-orange-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
         >
           Grant Role
@@ -559,7 +512,7 @@ export function DeveloperDepositEscrowAdmin() {
         </div>
         <button
             onClick={handleRevokeRole}
-            disabled={!selectedRoleBytes32 || !revokeRoleFromAddress || isWritePending || isConfirming}
+            disabled={!selectedRoleName || !revokeRoleFromAddress || isWritePending || isConfirming}
             className="mt-2 px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
             >
             Revoke Role
@@ -582,7 +535,6 @@ export function DeveloperDepositEscrowAdmin() {
             <option value="DEFAULT_ADMIN_ROLE">DEFAULT_ADMIN_ROLE</option>
             {roleNames.map(name => (<option key={`check-${name}`} value={name}>{name}</option>))}
           </select>
-          {checkRoleName && <p className="text-xs text-gray-600 mt-1">Computed Role Hash for Check: {checkRoleBytes32 || (checkRoleName ? 'Calculating...' : 'N/A')}</p>}
         </div>
         <div>
           <label htmlFor="checkRoleAddressDDE" className="block text-sm font-medium text-black">Account Address to Check:</label>
@@ -597,7 +549,7 @@ export function DeveloperDepositEscrowAdmin() {
         </div>
         <button 
           onClick={handleCheckHasRole} 
-          disabled={!checkRoleBytes32 || !checkRoleAccountAddress || isHasRoleLoading} 
+          disabled={!checkRoleName || !checkRoleAccountAddress || isHasRoleLoading} 
           className="px-4 py-2 bg-teal-500 text-white rounded hover:bg-teal-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
         >
           {isHasRoleLoading ? 'Checking...' : 'Check if Role is Granted'}

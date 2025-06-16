@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
-import { Address, Abi, keccak256, toHex, formatUnits, Hex, decodeEventLog, parseUnits } from 'viem';
+import { Address, Abi, formatUnits, Hex, decodeEventLog, parseUnits } from 'viem';
 import directProjectVaultAbiJson from '@/abis/DirectProjectVault.json';
 import constantsAbiJson from '@/abis/Constants.json';
+import { computeRoleHash, createRoleHashMap, getRoleNamesFromAbi } from '@/utils/crypto';
 
 // Event Argument Types
 type RoleGrantedEventArgs = { role: Hex; account: Address; sender: Address; };
@@ -15,22 +16,6 @@ type RiskParamsUpdatedEventArgs = { projectId: bigint; newAprBps: number; };
 
 const directProjectVaultAbi = directProjectVaultAbiJson.abi;
 const constantsAbi = constantsAbiJson.abi as Abi;
-
-// Helper functions (getRoleNamesFromAbi, createRoleHashMap) - can be imported from a shared util if they become common
-const getRoleNamesFromAbi = (abi: Abi): string[] => {
-  return abi
-    .filter(item => item.type === 'function' && item.outputs?.length === 1 && item.outputs[0].type === 'bytes32' && item.inputs?.length === 0)
-    .map(item => (item as { name: string }).name);
-};
-
-const createRoleHashMap = (roleNames: string[]): { [hash: Hex]: string } => {
-  const hashMap: { [hash: Hex]: string } = {};
-  roleNames.forEach(name => {
-    try { hashMap[keccak256(toHex(name))] = name; } catch (e) { console.error(`Error hashing role ${name}:`, e); }
-  });
-  hashMap['0x0000000000000000000000000000000000000000000000000000000000000000'] = 'DEFAULT_ADMIN_ROLE';
-  return hashMap;
-};
 
 export function DirectProjectVaultAdmin() {
   const {} = useAccount();
@@ -44,8 +29,7 @@ export function DirectProjectVaultAdmin() {
   const [roleNames, setRoleNames] = useState<string[]>([]);
   const [roleHashMap, setRoleHashMap] = useState<{ [hash: Hex]: string }>({});
   const [selectedRoleName, setSelectedRoleName] = useState<string>('');
-  const [selectedRoleBytes32, setSelectedRoleBytes32] = useState<Hex | null>(null);
-  const [roleManagementAddress, setRoleManagementAddress] = useState<string>(''); // For grant/revoke/check
+  const [roleManagementAddress, setRoleManagementAddress] = useState<string>('');
   const [roleEvents, setRoleEvents] = useState<(RoleGrantedEventArgs | RoleRevokedEventArgs)[]>([]);
   const [hasRoleResultVault, setHasRoleResultVault] = useState<boolean | string | null>(null);
 
@@ -61,6 +45,18 @@ export function DirectProjectVaultAdmin() {
   // New state for admin actions
   const [defaultWriteOffAmount, setDefaultWriteOffAmount] = useState<string>('');
   const [newAprBps, setNewAprBps] = useState<string>('');
+
+  // Memoize role hash computation
+  const selectedRoleBytes32 = useMemo(() => {
+    if (!selectedRoleName) return null;
+    
+    try {
+      return computeRoleHash(selectedRoleName);
+    } catch (error) {
+      console.error("Error computing role hash:", error);
+      return null;
+    }
+  }, [selectedRoleName]);
 
   // --- Read Hooks for Vault Details (dynamically enabled) ---
   const { data: totalAssetsData, refetch: fetchTotalAssets, isLoading: isLoadingTotalAssets } = useReadContract({
@@ -92,23 +88,6 @@ export function DirectProjectVaultAdmin() {
     setRoleNames(names);
     setRoleHashMap(createRoleHashMap(names));
   }, []);
-
-  useEffect(() => {
-    if (selectedRoleName) {
-      if (selectedRoleName === 'DEFAULT_ADMIN_ROLE') {
-        setSelectedRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
-      } else {
-        try {
-          setSelectedRoleBytes32(keccak256(toHex(selectedRoleName)));
-        } catch (e) { 
-          console.error("Error computing role hash:", e); 
-          setSelectedRoleBytes32(null); 
-        }
-      }
-    } else { 
-      setSelectedRoleBytes32(null); 
-    }
-  }, [selectedRoleName]);
 
   useEffect(() => {
     if (hasRoleDataVault !== undefined) {

@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
-import { Address, Abi, decodeEventLog, Hex, keccak256, toHex } from 'viem';
+import { Address, Abi, decodeEventLog, Hex } from 'viem';
 import liquidityPoolManagerAbiJson from '@/abis/LiquidityPoolManager.json';
 import constantsAbiJson from '@/abis/Constants.json';
+import { computeRoleHash, createRoleHashMap, getRoleNamesFromAbi } from '@/utils/crypto';
 
 // Define proper types for the event args
 type RoleGrantedEventArgs = {
@@ -38,26 +39,6 @@ const LIQUIDITY_POOL_MANAGER_ADDRESS = process.env.NEXT_PUBLIC_LIQUIDITY_POOL_MA
 const liquidityPoolManagerAbi = liquidityPoolManagerAbiJson.abi;
 const constantsAbi = constantsAbiJson.abi as Abi;
 
-const getRoleNamesFromAbi = (abi: Abi): string[] => {
-  return abi
-    .filter(item => item.type === 'function' && item.outputs?.length === 1 && item.outputs[0].type === 'bytes32' && item.inputs?.length === 0)
-    .map(item => (item as { name: string }).name);
-};
-
-// Helper to create a mapping from role hash to role name
-const createRoleHashMap = (roleNames: string[]): { [hash: Hex]: string } => {
-  const hashMap: { [hash: Hex]: string } = {};
-  roleNames.forEach(name => {
-    try {
-      hashMap[keccak256(toHex(name))] = name;
-    } catch (e) {
-      console.error(`Error creating hash for role ${name}:`, e);
-    }
-  });
-  hashMap['0x0000000000000000000000000000000000000000000000000000000000000000'] = 'DEFAULT_ADMIN_ROLE (Direct 0x00)';
-  return hashMap;
-};
-
 export function LiquidityPoolManagerAdmin() {
   const {} = useAccount();
   const { data: writeHash, writeContract, isPending: isWritePending, error: writeError } = useWriteContract();
@@ -71,7 +52,6 @@ export function LiquidityPoolManagerAdmin() {
   // State for Role Granting
   const [roleNames, setRoleNames] = useState<string[]>([]);
   const [selectedRoleName, setSelectedRoleName] = useState<string>('');
-  const [selectedRoleBytes32, setSelectedRoleBytes32] = useState<Hex | null>(null);
   const [grantRoleToAddress, setGrantRoleToAddress] = useState<string>('');
   const [revokeRoleFromAddress, setRevokeRoleFromAddress] = useState<string>('');
   const [roleEvents, setRoleEvents] = useState<(RoleGrantedEventArgs | RoleRevokedEventArgs)[]>([]);
@@ -84,7 +64,6 @@ export function LiquidityPoolManagerAdmin() {
 
   // State for HasRole Check
   const [checkRoleName, setCheckRoleName] = useState<string>('');
-  const [checkRoleBytes32, setCheckRoleBytes32] = useState<Hex | null>(null);
   const [checkRoleAccountAddress, setCheckRoleAccountAddress] = useState<string>('');
   const [hasRoleResult, setHasRoleResult] = useState<boolean | string | null>(null);
   const [hasRoleStatus, setHasRoleStatus] = useState<string>('');
@@ -121,6 +100,31 @@ export function LiquidityPoolManagerAdmin() {
     startTime?: bigint;
     isActive?: boolean;
   } | null>(null);
+
+  // Memoize role hash computations
+  const selectedRoleBytes32 = useMemo(() => {
+    if (!selectedRoleName) return null;
+    try {
+      return computeRoleHash(selectedRoleName);
+    } catch (error) {
+      console.error("Error computing role hash:", error);
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      setStatusMessage(`Error computing role hash: ${message}`);
+      return null;
+    }
+  }, [selectedRoleName]);
+
+  const checkRoleBytes32 = useMemo(() => {
+    if (!checkRoleName) return null;
+    try {
+      return computeRoleHash(checkRoleName);
+    } catch (error) {
+      console.error("Error computing check role hash:", error);
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      setHasRoleStatus(`Error computing check role hash: ${message}`);
+      return null;
+    }
+  }, [checkRoleName]);
 
   // --- Read Hooks ---
   const { data: pausedData, refetch: refetchPaused } = useReadContract({
@@ -189,53 +193,14 @@ export function LiquidityPoolManagerAdmin() {
 
   useEffect(() => {
     if (selectedRoleName) {
-      if (selectedRoleName === 'DEFAULT_ADMIN_ROLE') {
-        setSelectedRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
-        setStatusMessage('');
-      } else {
-        try {
-          const roleHex = toHex(selectedRoleName);
-          const roleHash = keccak256(roleHex);
-          setSelectedRoleBytes32(roleHash);
-          setStatusMessage('');
-        } catch (e: unknown) {
-          console.error("Error computing role hash:", e);
-          setSelectedRoleBytes32(null);
-          if (e instanceof Error) {
-              setStatusMessage(`Error computing role hash: ${e.message}`);
-          } else {
-              setStatusMessage('An unknown error occurred while computing role hash.');
-          }
-        }
-      }
-    } else {
-      setSelectedRoleBytes32(null);
+      setStatusMessage('');
     }
   }, [selectedRoleName]);
 
   useEffect(() => {
     if (checkRoleName) {
-      if (checkRoleName === 'DEFAULT_ADMIN_ROLE') {
-        setCheckRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
-        setHasRoleStatus('');
-      } else {
-        try {
-          const roleHex = toHex(checkRoleName);
-          const roleHash = keccak256(roleHex);
-          setCheckRoleBytes32(roleHash);
-          setHasRoleStatus('');
-        } catch (e: unknown) {
-          console.error("Error computing check role hash:", e);
-          setCheckRoleBytes32(null);
-          if (e instanceof Error) {
-            setHasRoleStatus(`Error computing role hash for check: ${e.message}`);
-          } else {
-            setHasRoleStatus('An unknown error occurred while computing check role hash.');
-          }
-        }
-      }
-    } else {
-      setCheckRoleBytes32(null);
+      setHasRoleStatus('');
+      setHasRoleResult(null);
     }
   }, [checkRoleName]);
 

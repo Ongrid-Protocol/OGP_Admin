@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
-import { Address, Abi, decodeEventLog, Hex, keccak256, toHex } from 'viem';
+import { Address, Abi, decodeEventLog, Hex } from 'viem';
 import developerRegistryAbiJson from '@/abis/DeveloperRegistry.json';
-import constantsAbiJson from '@/abis/Constants.json'; // Import Constants ABI
+import constantsAbiJson from '@/abis/Constants.json';
+import { computeRoleHash, createRoleHashMap, getRoleNamesFromAbi } from '@/utils/crypto';
 
 // Define proper types for the event args
 type RoleGrantedEventArgs = {
@@ -44,52 +45,27 @@ interface DeveloperInfo {
 const DEVELOPER_REGISTRY_ADDRESS = process.env.NEXT_PUBLIC_DEVELOPER_REGISTRY_ADDRESS as Address | undefined;
 
 const developerRegistryAbi = developerRegistryAbiJson.abi;
-const constantsAbi = constantsAbiJson.abi as Abi; // Cast to Abi
-
-// Helper to identify role-defining functions from Constants.json
-const getRoleNamesFromAbi = (abi: Abi): string[] => {
-  return abi
-    .filter(item => item.type === 'function' && item.outputs?.length === 1 && item.outputs[0].type === 'bytes32' && item.inputs?.length === 0)
-    .map(item => (item as { name: string }).name);
-};
-
-// Helper to create a mapping from role hash to role name
-const createRoleHashMap = (roleNames: string[]): { [hash: Hex]: string } => {
-  const hashMap: { [hash: Hex]: string } = {};
-  roleNames.forEach(name => {
-    try {
-      hashMap[keccak256(toHex(name))] = name;
-    } catch (e) {
-      console.error(`Error creating hash for role ${name}:`, e);
-    }
-  });
-  // Add DEFAULT_ADMIN_ROLE specifically if it's 0x00...00
-  hashMap['0x0000000000000000000000000000000000000000000000000000000000000000'] = 'DEFAULT_ADMIN_ROLE (Direct 0x00)';
-  return hashMap;
-};
+const constantsAbi = constantsAbiJson.abi as Abi;
 
 export function DeveloperRegistryAdmin() {
-  const {} = useAccount(); // connectedAddress removed as it was unused
+  const {} = useAccount();
   const { data: writeHash, writeContract, isPending: isWritePending, error: writeError } = useWriteContract();
   const { isLoading: isConfirming, isSuccess: isConfirmed, error: receiptError } = useWaitForTransactionReceipt({ hash: writeHash });
 
-  // State for read data (existing)
+  // State for read data
   const [isPaused, setIsPaused] = useState<boolean | null>(null);
-  // ... any other existing state ...
 
   // State for Role Granting & Revoking
   const [roleNames, setRoleNames] = useState<string[]>([]);
   const [selectedRoleName, setSelectedRoleName] = useState<string>('');
-  const [selectedRoleBytes32, setSelectedRoleBytes32] = useState<Hex | null>(null);
   const [grantRoleToAddress, setGrantRoleToAddress] = useState<string>('');
-  const [revokeRoleFromAddress, setRevokeRoleFromAddress] = useState<string>(''); // For Revoke Role
+  const [revokeRoleFromAddress, setRevokeRoleFromAddress] = useState<string>('');
   const [roleEvents, setRoleEvents] = useState<(RoleGrantedEventArgs | RoleRevokedEventArgs)[]>([]);
   const [roleHashMap, setRoleHashMap] = useState<{ [hash: Hex]: string }>({});
   const [statusMessage, setStatusMessage] = useState<string>('');
 
   // State for HasRole Check
   const [checkRoleName, setCheckRoleName] = useState<string>('');
-  const [checkRoleBytes32, setCheckRoleBytes32] = useState<Hex | null>(null);
   const [checkRoleAccountAddress, setCheckRoleAccountAddress] = useState<string>('');
   const [hasRoleResult, setHasRoleResult] = useState<boolean | string | null>(null);
   const [hasRoleStatus, setHasRoleStatus] = useState<string>('');
@@ -108,27 +84,52 @@ export function DeveloperRegistryAdmin() {
       DeveloperFundedCounterIncrementedEventArgs
     )[]>([]);
 
-  // --- Read Hooks (existing) ---
+  // Move useMemo declarations before useReadContract hooks
+  const selectedRoleBytes32 = useMemo(() => {
+    if (!selectedRoleName) return null;
+    
+    try {
+      return computeRoleHash(selectedRoleName);
+    } catch (error) {
+      console.error("Error computing role hash:", error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      setStatusMessage(`Error computing role hash: ${errorMessage}`);
+      return null;
+    }
+  }, [selectedRoleName]);
+
+  const checkRoleBytes32 = useMemo(() => {
+    if (!checkRoleName) return null;
+    
+    try {
+      return computeRoleHash(checkRoleName);
+    } catch (error) {
+      console.error("Error computing check role hash:", error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      setHasRoleStatus(`Error computing role hash for check: ${errorMessage}`);
+      return null;
+    }
+  }, [checkRoleName]);
+
+  // --- Read Hooks ---
   const { data: pausedData, refetch: refetchPaused } = useReadContract({
     address: DEVELOPER_REGISTRY_ADDRESS,
     abi: developerRegistryAbi,
     functionName: 'paused',
     query: { enabled: !!DEVELOPER_REGISTRY_ADDRESS }
   });
-  // ... any other existing read hooks ...
 
-  // --- HasRole Read Hook (on demand) ---
   const { data: hasRoleData, refetch: fetchHasRole, isLoading: isHasRoleLoading, error: hasRoleError } = useReadContract({
     address: DEVELOPER_REGISTRY_ADDRESS,
     abi: developerRegistryAbi,
     functionName: 'hasRole',
     args: checkRoleBytes32 && checkRoleAccountAddress ? [checkRoleBytes32, checkRoleAccountAddress as Address] : undefined,
     query: {
-      enabled: false, // Only fetch when refetch is called
+      enabled: false,
     },
   });
 
-  // --- Read Hooks for View KYC Info ---
+  // Read Hooks for View KYC Info
   const { data: devInfoData, refetch: fetchDeveloperInfo, isLoading: isDevInfoLoading, error: devInfoError } = useReadContract({
     address: DEVELOPER_REGISTRY_ADDRESS,
     abi: developerRegistryAbi,
@@ -145,69 +146,38 @@ export function DeveloperRegistryAdmin() {
     query: { enabled: false }
   });
 
-  // --- Effects (existing) ---
+  // Effects
   useEffect(() => { if (pausedData !== undefined) setIsPaused(pausedData as boolean); }, [pausedData]);
-  // ... any other existing effects ...
 
-  // --- Effects for Role Granting ---
   useEffect(() => {
     const names = getRoleNamesFromAbi(constantsAbi);
     setRoleNames(names);
     setRoleHashMap(createRoleHashMap(names));
   }, []);
 
-  // Effect to compute role bytes32 when selectedRoleName changes
   useEffect(() => {
     if (selectedRoleName) {
-      if (selectedRoleName === 'DEFAULT_ADMIN_ROLE') {
-        setSelectedRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
-        setStatusMessage('');
-      } else {
-        try {
-          const roleHex = toHex(selectedRoleName);
-          const roleHash = keccak256(roleHex);
-          setSelectedRoleBytes32(roleHash);
-          setStatusMessage('');
-        } catch (e: unknown) {
-          console.error("Error computing role hash:", e);
-          setSelectedRoleBytes32(null);
-          if (e instanceof Error) {
-              setStatusMessage(`Error computing role hash: ${e.message}`);
-          } else {
-              setStatusMessage('An unknown error occurred while computing role hash.');
-          }
-        }
-      }
-    } else {
-      setSelectedRoleBytes32(null);
+      setStatusMessage('');
     }
   }, [selectedRoleName]);
 
   useEffect(() => {
     if (checkRoleName) {
-      if (checkRoleName === 'DEFAULT_ADMIN_ROLE') {
-        setCheckRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
-        setHasRoleStatus('');
-      } else {
-        try {
-          const roleHex = toHex(checkRoleName);
-          const roleHash = keccak256(roleHex);
-          setCheckRoleBytes32(roleHash);
-          setHasRoleStatus('');
-        } catch (e: unknown) {
-          console.error("Error computing check role hash:", e);
-          setCheckRoleBytes32(null);
-          if (e instanceof Error) {
-            setHasRoleStatus(`Error computing role hash for check: ${e.message}`);
-          } else {
-            setHasRoleStatus('An unknown error occurred while computing check role hash.');
-          }
-        }
-      }
-    } else {
-      setCheckRoleBytes32(null);
+      setHasRoleStatus('');
+      setHasRoleResult(null);
     }
   }, [checkRoleName]);
+
+  useEffect(() => {
+    if (hasRoleData !== undefined) {
+      setHasRoleResult(hasRoleData as boolean);
+      setHasRoleStatus('');
+    }
+    if (hasRoleError) {
+        setHasRoleResult(`Error: ${hasRoleError.message}`);
+        setHasRoleStatus('');
+    }
+  }, [hasRoleData, hasRoleError]);
 
   // --- Event Watcher for RoleGranted ---
   useWatchContractEvent({
@@ -526,18 +496,6 @@ export function DeveloperRegistryAdmin() {
     }
   }, [isConfirmed, writeHash, writeError, receiptError, refetchAll]);
 
-  useEffect(() => {
-    if (hasRoleData !== undefined) {
-      setHasRoleResult(hasRoleData as boolean);
-      setHasRoleStatus('');
-    }
-    if (hasRoleError) {
-        setHasRoleResult(`Error: ${hasRoleError.message}`);
-        setHasRoleStatus('');
-    }
-  }, [hasRoleData, hasRoleError]);
-
-  // Effect for KYC View Data
   useEffect(() => {
     if (devInfoData) {
         const info = devInfoData as { kycDataHash: Hex, isVerified: boolean, timesFunded: number };

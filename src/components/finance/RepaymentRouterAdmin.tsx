@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
-import { Address, Abi, decodeEventLog, Hex, keccak256, toHex } from 'viem';
+import { Address, Abi, decodeEventLog, Hex } from 'viem';
 import repaymentRouterAbiJson from '@/abis/RepaymentRouter.json';
 import constantsAbiJson from '@/abis/Constants.json';
+import { computeRoleHash, createRoleHashMap, getRoleNamesFromAbi } from '@/utils/crypto';
 
 type RoleGrantedEventArgs = { role: Hex; account: Address; sender: Address; };
 // Add other event types if specific to RepaymentRouter are needed (e.g., RepaymentProcessed)
@@ -39,26 +40,6 @@ const REPAYMENT_ROUTER_ADDRESS = process.env.NEXT_PUBLIC_REPAYMENT_ROUTER_ADDRES
 const repaymentRouterAbi = repaymentRouterAbiJson.abi;
 const constantsAbi = constantsAbiJson.abi as Abi;
 
-const getRoleNamesFromAbi = (abi: Abi): string[] => {
-  return abi
-    .filter(item => item.type === 'function' && item.outputs?.length === 1 && item.outputs[0].type === 'bytes32' && item.inputs?.length === 0)
-    .map(item => (item as { name: string }).name);
-};
-
-// Helper to create a mapping from role hash to role name
-const createRoleHashMap = (roleNames: string[]): { [hash: Hex]: string } => {
-  const hashMap: { [hash: Hex]: string } = {};
-  roleNames.forEach(name => {
-    try {
-      hashMap[keccak256(toHex(name))] = name;
-    } catch (e) {
-      console.error(`Error creating hash for role ${name}:`, e);
-    }
-  });
-  hashMap['0x0000000000000000000000000000000000000000000000000000000000000000'] = 'DEFAULT_ADMIN_ROLE (Direct 0x00)';
-  return hashMap;
-};
-
 export function RepaymentRouterAdmin() {
   const {} = useAccount();
   const { data: writeHash, writeContract, isPending: isWritePending, error: writeError } = useWriteContract();
@@ -67,7 +48,6 @@ export function RepaymentRouterAdmin() {
   const [isPaused, setIsPaused] = useState<boolean | null>(null);
   const [roleNames, setRoleNames] = useState<string[]>([]);
   const [selectedRoleName, setSelectedRoleName] = useState<string>('');
-  const [selectedRoleBytes32, setSelectedRoleBytes32] = useState<Hex | null>(null);
   const [grantRoleToAddress, setGrantRoleToAddress] = useState<string>('');
   const [revokeRoleFromAddress, setRevokeRoleFromAddress] = useState<string>('');
   const [roleEvents, setRoleEvents] = useState<(RoleGrantedEventArgs | RoleRevokedEventArgs)[]>([]);
@@ -78,7 +58,6 @@ export function RepaymentRouterAdmin() {
 
   // State for HasRole Check
   const [checkRoleName, setCheckRoleName] = useState<string>('');
-  const [checkRoleBytes32, setCheckRoleBytes32] = useState<Hex | null>(null);
   const [checkRoleAccountAddress, setCheckRoleAccountAddress] = useState<string>('');
   const [hasRoleResult, setHasRoleResult] = useState<boolean | string | null>(null);
   const [hasRoleStatus, setHasRoleStatus] = useState<string>('');
@@ -87,6 +66,31 @@ export function RepaymentRouterAdmin() {
   const [viewProjectId, setViewProjectId] = useState<string>('');
   const [fundingSourceInfo, setFundingSourceInfo] = useState<{ source: Address | null; poolId: bigint | null }>({ source: null, poolId: null });
   const [paymentSummary, setPaymentSummary] = useState<PaymentSummary | null>(null);
+
+  // Memoize role hash computations
+  const selectedRoleBytes32 = useMemo(() => {
+    if (!selectedRoleName) return null;
+    try {
+      return computeRoleHash(selectedRoleName);
+    } catch (error) {
+      console.error("Error computing role hash:", error);
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      setStatusMessage(`Error computing role hash: ${message}`);
+      return null;
+    }
+  }, [selectedRoleName]);
+
+  const checkRoleBytes32 = useMemo(() => {
+    if (!checkRoleName) return null;
+    try {
+      return computeRoleHash(checkRoleName);
+    } catch (error) {
+      console.error("Error computing check role hash:", error);
+      const message = error instanceof Error ? error.message : 'Unknown error';
+      setHasRoleStatus(`Error computing check role hash: ${message}`);
+      return null;
+    }
+  }, [checkRoleName]);
 
   const { data: pausedData, refetch: refetchPaused } = useReadContract({
     address: REPAYMENT_ROUTER_ADDRESS,
@@ -150,47 +154,14 @@ export function RepaymentRouterAdmin() {
 
   useEffect(() => {
     if (selectedRoleName) {
-      if (selectedRoleName === 'DEFAULT_ADMIN_ROLE') {
-        setSelectedRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
-        setStatusMessage('');
-      } else {
-        try {
-          setSelectedRoleBytes32(keccak256(toHex(selectedRoleName)));
-          setStatusMessage('');
-        } catch (e: unknown) { 
-          setSelectedRoleBytes32(null); 
-          if (e instanceof Error) {
-              setStatusMessage(`Error computing role hash: ${e.message}`);
-          } else {
-              setStatusMessage('An unknown error occurred while computing role hash.');
-          }
-        }
-      }
-    } else { 
-      setSelectedRoleBytes32(null); 
+      setStatusMessage('');
     }
   }, [selectedRoleName]);
 
   useEffect(() => {
     if (checkRoleName) {
-      if (checkRoleName === 'DEFAULT_ADMIN_ROLE') {
-        setCheckRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
-        setHasRoleStatus('');
-      } else {
-        try {
-          setCheckRoleBytes32(keccak256(toHex(checkRoleName)));
-          setHasRoleStatus('');
-        } catch (e: unknown) { 
-          setCheckRoleBytes32(null); 
-          if (e instanceof Error) {
-            setHasRoleStatus(`Error computing role hash for check: ${e.message}`); 
-          } else {
-            setHasRoleStatus('An unknown error occurred while computing role hash for check.');
-          }
-        }
-      }
-    } else { 
-      setCheckRoleBytes32(null); 
+      setHasRoleStatus('');
+      setHasRoleResult(null);
     }
   }, [checkRoleName]);
 
@@ -206,7 +177,10 @@ export function RepaymentRouterAdmin() {
           const roleName = roleHashMap[args.role] || args.role; // Fallback to hash
           setRoleEvents(prev => [...prev, args]);
           setStatusMessage(`RoleGranted Event: Role ${roleName} (${args.role.substring(0,10)}...) granted to ${args.account}`);
-        } catch (e: unknown) { console.error("Error decoding RoleGranted:", e); setStatusMessage("Error processing RoleGranted event."); }
+        } catch (error) { 
+          console.error("Error decoding RoleGranted:", error); 
+          setStatusMessage("Error processing RoleGranted event."); 
+        }
       });
     },
     onError: (error) => { console.error('Error watching RoleGranted event:', error); setStatusMessage(`Error watching RoleGranted event: ${error.message}`); }
@@ -224,7 +198,10 @@ export function RepaymentRouterAdmin() {
           const roleName = roleHashMap[args.role] || args.role;
           setRoleEvents(prev => [...prev, args]);
           setStatusMessage(`RoleRevoked Event: Role ${roleName} (${args.role.substring(0,10)}...) revoked from ${args.account}`);
-        } catch (e: unknown) { console.error("Error decoding RoleRevoked:", e); setStatusMessage("Error processing RoleRevoked event."); }
+        } catch (error) { 
+          console.error("Error decoding RoleRevoked:", error); 
+          setStatusMessage("Error processing RoleRevoked event."); 
+        }
       });
     },
     onError: (error) => { console.error('Error watching RoleRevoked event:', error); setStatusMessage(`Error watching RoleRevoked event: ${error.message}`); }
@@ -242,7 +219,9 @@ export function RepaymentRouterAdmin() {
           const args = decoded.args as unknown as FundingSourceSetEventArgs;
           setRouterEvents(prev => [...prev, args]);
           setStatusMessage(`FundingSourceSet for Project ${args.projectId.toString()} by ${args.setter}`);
-        } catch (e: unknown) { console.error("Error decoding FundingSourceSet event:", e); }
+        } catch (error) { 
+          console.error("Error decoding FundingSourceSet event:", error); 
+        }
       });
     }
   });
@@ -258,7 +237,9 @@ export function RepaymentRouterAdmin() {
           const args = decoded.args as unknown as RepaymentRoutedEventArgs;
           setRouterEvents(prev => [...prev, args]);
           setStatusMessage(`RepaymentRouted for Project ${args.projectId.toString()} from ${args.payer}`);
-        } catch (e: unknown) { console.error("Error decoding RepaymentRouted event:", e); }
+        } catch (error) { 
+          console.error("Error decoding RepaymentRouted event:", error); 
+        }
       });
     }
   });
@@ -281,12 +262,14 @@ export function RepaymentRouterAdmin() {
   };
 
   const handleGrantRole = () => {
-    if (!selectedRoleBytes32 || !grantRoleToAddress) { setStatusMessage('Role or address missing'); return; }
+    if (!selectedRoleBytes32) { setStatusMessage('Role or address missing'); return; }
+    if (!grantRoleToAddress) { setStatusMessage('Address to grant is missing'); return; }
     handleWrite('grantRole', [selectedRoleBytes32, grantRoleToAddress as Address], `Granting ${selectedRoleName}...`);
   };
 
   const handleRevokeRole = () => {
-    if (!selectedRoleBytes32 || !revokeRoleFromAddress) { setStatusMessage('Role or address to revoke from missing'); return; }
+    if (!selectedRoleBytes32) { setStatusMessage('Role or address to revoke from missing'); return; }
+    if (!revokeRoleFromAddress) { setStatusMessage('Address to revoke is missing'); return; }
     handleWrite('revokeRole', [selectedRoleBytes32, revokeRoleFromAddress as Address], `Revoking ${selectedRoleName} from ${revokeRoleFromAddress}...`);
   };
 
@@ -353,18 +336,17 @@ export function RepaymentRouterAdmin() {
             <option value="">-- Select Role --</option>
             {roleNames.map(name => (<option key={name} value={name}>{name}</option>))}
             </select>
-            {selectedRoleName && <p className="text-xs text-gray-600 mt-1">Computed Role Hash: {selectedRoleBytes32 || (selectedRoleName ? 'Calculating...' : 'N/A')}</p>}
         </div>
         <div>
             <label htmlFor="grantRoleAddressRR" className="block text-sm font-medium text-black">Address to Grant Role:</label>
             <input type="text" id="grantRoleAddressRR" value={grantRoleToAddress} onChange={(e) => setGrantRoleToAddress(e.target.value)} placeholder="0x... (e.g., ProjectFactory for PROJECT_HANDLER_ROLE)" className="mt-1 block w-full px-3 py-2 border border-gray-300 rounded-md shadow-sm focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm text-black placeholder-gray-500" />
         </div>
-        <button onClick={handleGrantRole} disabled={!selectedRoleBytes32 || !grantRoleToAddress || isWritePending || isConfirming} className="px-4 py-2 bg-orange-500 text-white rounded hover:bg-orange-600 disabled:bg-gray-400 disabled:cursor-not-allowed">Grant Role</button>
+        <button onClick={handleGrantRole} disabled={!selectedRoleName || !grantRoleToAddress || isWritePending || isConfirming} className="px-4 py-2 bg-orange-500 text-white rounded hover:bg-orange-600 disabled:bg-gray-400 disabled:cursor-not-allowed">Grant Role</button>
         <div className="mt-4">
             <label htmlFor="revokeRoleAddressRR" className="block text-sm font-medium text-black">Address to Revoke Role From:</label>
             <input type="text" id="revokeRoleAddressRR" value={revokeRoleFromAddress} onChange={(e) => setRevokeRoleFromAddress(e.target.value)} placeholder="0x..." className="mt-1 block w-full input-style text-black" />
         </div>
-        <button onClick={handleRevokeRole} disabled={!selectedRoleBytes32 || !revokeRoleFromAddress || isWritePending || isConfirming} className="mt-2 px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 disabled:bg-gray-400">Revoke Role</button>
+        <button onClick={handleRevokeRole} disabled={!selectedRoleName || !revokeRoleFromAddress || isWritePending || isConfirming} className="mt-2 px-4 py-2 bg-red-500 text-white rounded hover:bg-red-600 disabled:bg-gray-400">Revoke Role</button>
       </div>
 
       {/* Check Role Section */}
@@ -382,7 +364,6 @@ export function RepaymentRouterAdmin() {
               <option value="DEFAULT_ADMIN_ROLE">DEFAULT_ADMIN_ROLE</option>
               {roleNames.map(name => (<option key={`check-${name}`} value={name}>{name}</option>))}
             </select>
-            {checkRoleName && <p className="text-xs text-gray-600 mt-1">Computed Role Hash for Check: {checkRoleBytes32 || (checkRoleName ? 'Calculating...' : 'N/A')}</p>}
         </div>
         <div>
             <label htmlFor="checkRoleAddressRR" className="block text-sm font-medium text-black">Account Address to Check:</label>
@@ -397,7 +378,7 @@ export function RepaymentRouterAdmin() {
         </div>
         <button 
           onClick={handleCheckHasRole} 
-          disabled={!checkRoleBytes32 || !checkRoleAccountAddress || isHasRoleLoading} 
+          disabled={!checkRoleName || !checkRoleAccountAddress || isHasRoleLoading} 
           className="px-4 py-2 bg-teal-500 text-white rounded hover:bg-teal-600 disabled:bg-gray-400 disabled:cursor-not-allowed"
         >
           {isHasRoleLoading ? 'Checking...' : 'Check if Role is Granted'}

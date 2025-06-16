@@ -1,10 +1,11 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
-import { Address, Abi, decodeEventLog, Hex, keccak256, toHex } from 'viem';
+import { Address, Abi, decodeEventLog, Hex } from 'viem';
 import pausableGovernorAbiJson from '@/abis/PausableGovernor.json';
 import constantsAbiJson from '@/abis/Constants.json';
+import { computeRoleHash, createRoleHashMap, getRoleNamesFromAbi } from '@/utils/crypto';
 
 // Event Argument Types
 type RoleGrantedEventArgs = { role: Hex; account: Address; sender: Address; };
@@ -14,26 +15,10 @@ type UnpausedTargetEventArgs = { target: Address; unpauser: Address; };
 type PausableContractAddedEventArgs = { target: Address; admin: Address; };
 type PausableContractRemovedEventArgs = { target: Address; admin: Address; };
 
-
 const PAUSABLE_GOVERNOR_ADDRESS = process.env.NEXT_PUBLIC_PAUSABLE_GOVERNOR_ADDRESS as Address | undefined;
 
 const pausableGovernorAbi = pausableGovernorAbiJson.abi as Abi;
 const constantsAbi = constantsAbiJson.abi as Abi;
-
-const getRoleNamesFromAbi = (abi: Abi): string[] => {
-  return abi
-    .filter(item => item.type === 'function' && item.outputs?.length === 1 && item.outputs[0].type === 'bytes32' && item.inputs?.length === 0)
-    .map(item => (item as { name: string }).name);
-};
-
-const createRoleHashMap = (roleNames: string[]): { [hash: Hex]: string } => {
-  const hashMap: { [hash: Hex]: string } = {};
-  roleNames.forEach(name => {
-    try { hashMap[keccak256(toHex(name))] = name; } catch (e) { console.error(`Error hashing role ${name}:`, e); }
-  });
-  hashMap['0x0000000000000000000000000000000000000000000000000000000000000000'] = 'DEFAULT_ADMIN_ROLE';
-  return hashMap;
-};
 
 export function PausableGovernorAdmin() {
   const {} = useAccount();
@@ -46,11 +31,9 @@ export function PausableGovernorAdmin() {
   const [roleNames, setRoleNames] = useState<string[]>([]);
   const [roleHashMap, setRoleHashMap] = useState<{ [hash: Hex]: string }>({});
   const [selectedRoleName, setSelectedRoleName] = useState<string>('');
-  const [selectedRoleBytes32, setSelectedRoleBytes32] = useState<Hex | null>(null);
   const [grantRoleToAddress, setGrantRoleToAddress] = useState<string>('');
   const [revokeRoleFromAddress, setRevokeRoleFromAddress] = useState<string>('');
   const [checkRoleName, setCheckRoleName] = useState<string>('');
-  const [checkRoleBytes32, setCheckRoleBytes32] = useState<Hex | null>(null);
   const [checkRoleAccountAddress, setCheckRoleAccountAddress] = useState<string>('');
   const [hasRoleResult, setHasRoleResult] = useState<boolean | string | null>(null);
   const [hasRoleStatus, setHasRoleStatus] = useState<string>('');
@@ -65,6 +48,33 @@ export function PausableGovernorAdmin() {
       (PausableContractAddedEventArgs & { eventName: 'PausableContractAdded' }) |
       (PausableContractRemovedEventArgs & { eventName: 'PausableContractRemoved' })
     )[]>([]);
+
+  // Memoize role hash computations
+  const selectedRoleBytes32 = useMemo(() => {
+    if (!selectedRoleName) return null;
+    
+    try {
+      return computeRoleHash(selectedRoleName);
+    } catch (error) {
+      console.error("Error computing role hash:", error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      setStatusMessage(`Error computing role hash: ${errorMessage}`);
+      return null;
+    }
+  }, [selectedRoleName]);
+
+  const checkRoleBytes32 = useMemo(() => {
+    if (!checkRoleName) return null;
+    
+    try {
+      return computeRoleHash(checkRoleName);
+    } catch (error) {
+      console.error("Error computing check role hash:", error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      setHasRoleStatus(`Error computing role hash for check: ${errorMessage}`);
+      return null;
+    }
+  }, [checkRoleName]);
 
   // Read: isPausableContract
   const { data: isPausableContractResult, refetch: checkIsPausable } = useReadContract({
@@ -89,41 +99,17 @@ export function PausableGovernorAdmin() {
     setRoleHashMap(createRoleHashMap(names));
   }, []);
 
+  // Update the effects to clear status messages consistently
   useEffect(() => {
     if (selectedRoleName) {
-      if (selectedRoleName === 'DEFAULT_ADMIN_ROLE') {
-        setSelectedRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
-      } else {
-        try {
-          setSelectedRoleBytes32(keccak256(toHex(selectedRoleName)));
-        } catch (e: unknown) { 
-          console.error("Error computing role hash:", e); 
-          setSelectedRoleBytes32(null);
-          if (e instanceof Error) setStatusMessage(`Error computing role hash: ${e.message}`);
-          else setStatusMessage('Unknown error computing role hash.');
-         }
-      }
-    } else { 
-      setSelectedRoleBytes32(null); 
+      setStatusMessage('');
     }
   }, [selectedRoleName]);
 
   useEffect(() => {
     if (checkRoleName) {
-      if (checkRoleName === 'DEFAULT_ADMIN_ROLE') {
-        setCheckRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
-      } else {
-        try {
-          setCheckRoleBytes32(keccak256(toHex(checkRoleName)));
-        } catch (e: unknown) { 
-          console.error("Error computing check role hash:", e); 
-          setCheckRoleBytes32(null); 
-          if (e instanceof Error) setStatusMessage(`Error computing check role hash: ${e.message}`);
-          else setStatusMessage('Unknown error computing check role hash.');
-        }
-      }
-    } else { 
-      setCheckRoleBytes32(null); 
+      setHasRoleStatus('');
+      setHasRoleResult(null);
     }
   }, [checkRoleName]);
   
@@ -225,7 +211,6 @@ export function PausableGovernorAdmin() {
       }
   });
 
-
   const refetchAll = useCallback(() => { /* Potentially refetch managed contracts if not relying solely on events */ }, []);
 
   const handleWrite = (functionName: string, args: unknown[], successMessage?: string) => {
@@ -288,7 +273,6 @@ export function PausableGovernorAdmin() {
         setStatusMessage(`Contract ${targetContractAddress} isPausable: ${isPausableContractResult}`);
     }
   }, [isPausableContractResult, targetContractAddress]);
-
 
   useEffect(() => {
     if (isConfirmed) { setStatusMessage(`Transaction successful! Hash: ${writeHash}`); refetchAll(); }

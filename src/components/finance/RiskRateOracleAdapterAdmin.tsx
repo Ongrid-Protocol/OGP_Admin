@@ -1,15 +1,16 @@
 "use client";
 
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { useAccount, useWriteContract, useWaitForTransactionReceipt, useReadContract, useWatchContractEvent } from 'wagmi';
-import { Address, Abi, decodeEventLog, Hex, keccak256, toHex } from 'viem';
+import { Address, Abi, decodeEventLog, Hex } from 'viem';
 import riskRateOracleAdapterAbiJson from '@/abis/RiskRateOracleAdapter.json';
 import constantsAbiJson from '@/abis/Constants.json';
+import { computeRoleHash, createRoleHashMap, getRoleNamesFromAbi } from '@/utils/crypto';
 
 type RoleGrantedEventArgs = { role: Hex; account: Address; sender: Address; };
 type RoleRevokedEventArgs = { role: Hex; account: Address; sender: Address; };
 type ProjectRiskLevelSetEventArgs = { projectId: bigint; riskLevel: number; };
-type RiskParamsPushedEventArgs = { projectId: bigint; aprBps: number; /* uint16 */ tenor: bigint; /* uint48 */ targetContract: Address, oracle: Address };
+type RiskParamsPushedEventArgs = { projectId: bigint; aprBps: number; tenor: bigint; targetContract: Address, oracle: Address };
 type PeriodicAssessmentRequestedEventArgs = { projectId: bigint; timestamp: bigint; targetContract: Address, poolId: bigint };
 type AssessmentIntervalUpdatedEventArgs = { newInterval: bigint; oldInterval: bigint; };
 
@@ -17,26 +18,6 @@ const RISK_RATE_ORACLE_ADAPTER_ADDRESS = process.env.NEXT_PUBLIC_RISK_RATE_ORACL
 
 const riskRateOracleAdapterAbi = riskRateOracleAdapterAbiJson.abi;
 const constantsAbi = constantsAbiJson.abi as Abi;
-
-const getRoleNamesFromAbi = (abi: Abi): string[] => {
-  return abi
-    .filter(item => item.type === 'function' && item.outputs?.length === 1 && item.outputs[0].type === 'bytes32' && item.inputs?.length === 0)
-    .map(item => (item as { name: string }).name);
-};
-
-// Helper to create a mapping from role hash to role name
-const createRoleHashMap = (roleNames: string[]): { [hash: Hex]: string } => {
-  const hashMap: { [hash: Hex]: string } = {};
-  roleNames.forEach(name => {
-    try {
-      hashMap[keccak256(toHex(name))] = name;
-    } catch (e) {
-      console.error(`Error creating hash for role ${name}:`, e);
-    }
-  });
-  hashMap['0x0000000000000000000000000000000000000000000000000000000000000000'] = 'DEFAULT_ADMIN_ROLE (Direct 0x00)';
-  return hashMap;
-};
 
 export function RiskRateOracleAdapterAdmin() {
   const {} = useAccount();
@@ -49,7 +30,6 @@ export function RiskRateOracleAdapterAdmin() {
   
   const [roleNames, setRoleNames] = useState<string[]>([]);
   const [selectedRoleName, setSelectedRoleName] = useState<string>('');
-  const [selectedRoleBytes32, setSelectedRoleBytes32] = useState<Hex | null>(null);
   const [grantRoleToAddress, setGrantRoleToAddress] = useState<string>('');
   const [revokeRoleFromAddress, setRevokeRoleFromAddress] = useState<string>('');
   const [roleEvents, setRoleEvents] = useState<(RoleGrantedEventArgs | RoleRevokedEventArgs)[]>([]);
@@ -62,11 +42,9 @@ export function RiskRateOracleAdapterAdmin() {
   )[]>([]);
   const [roleHashMap, setRoleHashMap] = useState<{ [hash: Hex]: string }>({});
   const [statusMessage, setStatusMessage] = useState<string>('');
-  // Add state for other events if needed
 
   // State for HasRole Check
   const [checkRoleName, setCheckRoleName] = useState<string>('');
-  const [checkRoleBytes32, setCheckRoleBytes32] = useState<Hex | null>(null);
   const [checkRoleAccountAddress, setCheckRoleAccountAddress] = useState<string>('');
   const [hasRoleResult, setHasRoleResult] = useState<boolean | string | null>(null);
   const [hasRoleStatus, setHasRoleStatus] = useState<string>('');
@@ -85,6 +63,33 @@ export function RiskRateOracleAdapterAdmin() {
   const [poolIdForProject, setPoolIdForProject] = useState<bigint | null>(null);
   const [projectRiskLevelDisplay, setProjectRiskLevelDisplay] = useState<number | null>(null);
   const [lastAssessmentTimestamp, setLastAssessmentTimestamp] = useState<bigint | null>(null);
+
+  // Memoize role hash computations
+  const selectedRoleBytes32 = useMemo(() => {
+    if (!selectedRoleName) return null;
+    
+    try {
+      return computeRoleHash(selectedRoleName);
+    } catch (error) {
+      console.error("Error computing role hash:", error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      setStatusMessage(`Error computing role hash: ${errorMessage}`);
+      return null;
+    }
+  }, [selectedRoleName]);
+
+  const checkRoleBytes32 = useMemo(() => {
+    if (!checkRoleName) return null;
+    
+    try {
+      return computeRoleHash(checkRoleName);
+    } catch (error) {
+      console.error("Error computing check role hash:", error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
+      setHasRoleStatus(`Error computing role hash for check: ${errorMessage}`);
+      return null;
+    }
+  }, [checkRoleName]);
 
   const { data: pausedData, refetch: refetchPaused } = useReadContract({
     address: RISK_RATE_ORACLE_ADAPTER_ADDRESS,
@@ -151,47 +156,14 @@ export function RiskRateOracleAdapterAdmin() {
 
   useEffect(() => {
     if (selectedRoleName) {
-      if (selectedRoleName === 'DEFAULT_ADMIN_ROLE') {
-        setSelectedRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
-        setStatusMessage('');
-      } else {
-        try {
-          setSelectedRoleBytes32(keccak256(toHex(selectedRoleName)));
-          setStatusMessage('');
-        } catch (e: unknown) { 
-          setSelectedRoleBytes32(null); 
-          if (e instanceof Error) {
-              setStatusMessage(`Error computing role hash: ${e.message}`);
-          } else {
-              setStatusMessage('An unknown error occurred while computing role hash.');
-          }
-        }
-      }
-    } else { 
-      setSelectedRoleBytes32(null); 
+      setStatusMessage('');
     }
   }, [selectedRoleName]);
 
   useEffect(() => {
     if (checkRoleName) {
-      if (checkRoleName === 'DEFAULT_ADMIN_ROLE') {
-        setCheckRoleBytes32('0x0000000000000000000000000000000000000000000000000000000000000000');
-        setHasRoleStatus('');
-      } else {
-        try {
-          setCheckRoleBytes32(keccak256(toHex(checkRoleName)));
-          setHasRoleStatus('');
-        } catch (e: unknown) { 
-          setCheckRoleBytes32(null); 
-          if (e instanceof Error) {
-            setHasRoleStatus(`Error computing role hash for check: ${e.message}`); 
-          } else {
-            setHasRoleStatus('An unknown error occurred while computing role hash for check.');
-          }
-        }
-      }
-    } else { 
-      setCheckRoleBytes32(null); 
+      setHasRoleStatus('');
+      setHasRoleResult(null);
     }
   }, [checkRoleName]);
 
